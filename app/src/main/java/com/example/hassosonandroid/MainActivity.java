@@ -1,8 +1,8 @@
 package com.example.hassosonandroid;
 
+import android.content.SharedPreferences;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.FileUtils;
 import android.preference.PreferenceManager;
 import android.system.Os;
 import android.util.Log;
@@ -15,6 +15,7 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import org.apache.commons.compress.archivers.ar.ArArchiveInputStream;
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
 import org.tukaani.xz.XZInputStream;
 
@@ -164,8 +165,9 @@ public class MainActivity extends AppCompatActivity {
                 if (entry.getName().equals("data.tar.xz")) {
                     XZInputStream xzInput = new XZInputStream(arInput);
                     try (TarArchiveInputStream tarInput = new TarArchiveInputStream(xzInput)) {
-                        org.apache.commons.compress.archivers.ArchiveEntry tarEntry;
-                        while ((tarEntry = tarInput.getNextEntry()) != null) {
+                        TarArchiveEntry tarEntry;
+                        while ((tarEntry = tarInput.getNextTarEntry()) != null) {
+                            if (tarEntry.isDirectory()) continue;
                             String entryPath = tarEntry.getName();
                             File outputFile;
                             if (entryPath.contains("/lib/")) {
@@ -381,7 +383,7 @@ public class MainActivity extends AppCompatActivity {
 
     private void setButtonsEnabled(boolean enabled) {
         downloadButton.setEnabled(enabled);
-        if(enabled) { // Only re-enable start if files exist
+        if(enabled) {
             checkFilesExist();
         } else {
             startButton.setEnabled(false);
