@@ -1,15 +1,18 @@
 package com.example.hassosonandroid;
 
-import androidx.appcompat.app.AlertDialog;
-import androidx.appcompat.app.AppCompatActivity;
-
-import android.content.SharedPreferences;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.FileUtils;
 import android.preference.PreferenceManager;
+import android.system.Os;
 import android.util.Log;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.annotation.RequiresApi;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
 
 import org.apache.commons.compress.archivers.ar.ArArchiveInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
@@ -122,7 +125,6 @@ public class MainActivity extends AppCompatActivity {
                 if (!osImage.exists()) {
                     File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
                     downloadUrlToFile(HAOS_URL, osImageXz, "Home Assistant OS");
-                    updateStatus("Unpacking Home Assistant OS image...");
                     decompressXz(osImageXz, osImage);
                     osImageXz.delete();
                 }
@@ -146,7 +148,8 @@ public class MainActivity extends AppCompatActivity {
         debFile.delete();
     }
 
-    private void unpackDeb(File debFile) throws IOException {
+    @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
+    private void unpackDeb(File debFile) throws Exception {
         File libDir = libDir();
         File binDir = binDir();
 
@@ -163,7 +166,6 @@ public class MainActivity extends AppCompatActivity {
                     try (TarArchiveInputStream tarInput = new TarArchiveInputStream(xzInput)) {
                         org.apache.commons.compress.archivers.ArchiveEntry tarEntry;
                         while ((tarEntry = tarInput.getNextEntry()) != null) {
-                            if (tarEntry.isDirectory()) continue;
                             String entryPath = tarEntry.getName();
                             File outputFile;
                             if (entryPath.contains("/lib/")) {
@@ -173,8 +175,15 @@ public class MainActivity extends AppCompatActivity {
                             } else {
                                 continue;
                             }
-                            try (OutputStream out = new FileOutputStream(outputFile)) {
-                                tarInput.transferTo(out);
+
+                            if (outputFile.exists()) outputFile.delete();
+
+                            if (tarEntry.isSymbolicLink()) {
+                                Os.symlink(tarEntry.getLinkName(), outputFile.getAbsolutePath());
+                            } else {
+                                try (OutputStream out = new FileOutputStream(outputFile)) {
+                                    tarInput.transferTo(out);
+                                }
                             }
                         }
                     }
@@ -222,14 +231,12 @@ public class MainActivity extends AppCompatActivity {
                 File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
                 if (!qemuBinary.exists() || !osImage.exists()) throw new IOException("Required files not found.");
 
-                String qemuPath = qemuBinary.getAbsolutePath();
-                String osImagePath = osImage.getAbsolutePath();
-
-                String command = "chmod 755 " + qemuPath + " && " +
-                                 "LD_LIBRARY_PATH=" + libDir().getAbsolutePath() +
-                                 " " + qemuPath +
+                String command = "chmod -R 755 " + binDir().getAbsolutePath() + " && " +
+                                 "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
+                                 "export LD_LIBRARY_PATH=" + libDir().getAbsolutePath() + " && " +
+                                 qemuBinary.getAbsolutePath() +
                                  " -m 2048 -M virt -cpu cortex-a57 -smp 2" +
-                                 " -hda " + osImagePath +
+                                 " -hda " + osImage.getAbsolutePath() +
                                  " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
                                  " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0";
 
@@ -267,7 +274,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void decompressXz(File source, File dest) throws IOException {
-        updateStatus("Decompressing " + source.getName() + "...");
+        updateStatus("Unpacking " + source.getName() + "...");
         try (InputStream in = new XZInputStream(new FileInputStream(source)); OutputStream out = new FileOutputStream(dest)) {
             byte[] buffer = new byte[8192];
             int read;
@@ -343,12 +350,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     void deleteRecursive(File fileOrDirectory) {
-        if (fileOrDirectory.exists() && fileOrDirectory.isDirectory()) {
-            for (File child : fileOrDirectory.listFiles()) {
-                deleteRecursive(child);
+        if (fileOrDirectory.exists()) {
+            if (fileOrDirectory.isDirectory()) {
+                for (File child : fileOrDirectory.listFiles()) {
+                    deleteRecursive(child);
+                }
             }
+            fileOrDirectory.delete();
         }
-        fileOrDirectory.delete();
     }
 
     private void checkFilesExist() {
@@ -358,8 +367,7 @@ public class MainActivity extends AppCompatActivity {
 
         startButton.setEnabled(allExist);
         deleteAllButton.setEnabled(allExist);
-        clearCacheButton.setEnabled(true);
-        downloadButton.setEnabled(true);
+        setButtonsEnabled(true);
 
         if (allExist) {
             updateStatus("Ready. You can check for updates or start VM.");
@@ -373,7 +381,11 @@ public class MainActivity extends AppCompatActivity {
 
     private void setButtonsEnabled(boolean enabled) {
         downloadButton.setEnabled(enabled);
-        startButton.setEnabled(enabled);
+        if(enabled) { // Only re-enable start if files exist
+            checkFilesExist();
+        } else {
+            startButton.setEnabled(false);
+        }
         clearCacheButton.setEnabled(enabled);
         deleteAllButton.setEnabled(enabled);
     }
