@@ -50,11 +50,12 @@ task downloadAndUnpackQemu {
         def packagesUrl = new URL(termuxRepoUrl + "dists/stable/main/binary-aarch64/Packages")
         def qemuPackageName = "qemu-system-aarch64-headless"
         def qemuBinaryName = "qemu-system-aarch64" // The actual binary name
+        def qemuFinalName = "libqemu.so" // The name it needs to have in the APK
         def jniDir = new File(project.projectDir, "src/main/jniLibs/aarch64")
         def buildDir = project.buildDir
         def qemuDeb = new File(buildDir, "qemu.deb")
         def unpackDir = new File(buildDir, "qemu_unpack")
-        def qemuBinary = new File(jniDir, qemuBinaryName)
+        def qemuBinary = new File(jniDir, qemuFinalName)
 
         // Only run if the binary doesn't already exist
         if (qemuBinary.exists()) {
@@ -133,9 +134,9 @@ task downloadAndUnpackQemu {
             throw new GradleException("QEMU binary ($qemuBinaryName) not found in data.tar.xz.")
         }
 
-        println ">>> Copying QEMU binary to jniLibs..."
+        println ">>> Copying QEMU binary to jniLibs as " + qemuFinalName + "..."
         jniDir.mkdirs()
-        sourceBinary.renameTo(qemuBinary)
+        sourceBinary.renameTo(qemuBinary) // qemuBinary is already defined with the final name
 
         println ">>> Cleaning up..."
         qemuDeb.delete()

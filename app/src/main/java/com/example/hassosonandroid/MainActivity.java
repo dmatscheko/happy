@@ -22,7 +22,7 @@ import java.net.URL;
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "HassOS";
-    private static final String QEMU_BINARY_NAME = "qemu-system-aarch64";
+    private static final String QEMU_BINARY_NAME = "libqemu.so";
     private static final String OS_IMAGE_NAME_XZ = "haos.qcow2.xz";
     private static final String OS_IMAGE_NAME = "haos.qcow2";
 
