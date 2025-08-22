@@ -49,11 +49,12 @@ task downloadAndUnpackQemu {
         def termuxRepoUrl = "https://packages.termux.dev/apt/termux-main/"
         def packagesUrl = new URL(termuxRepoUrl + "dists/stable/main/binary-aarch64/Packages")
         def qemuPackageName = "qemu-system-aarch64-headless"
+        def qemuBinaryName = "qemu-system-aarch64" // The actual binary name
         def jniDir = new File(project.projectDir, "src/main/jniLibs/aarch64")
         def buildDir = project.buildDir
         def qemuDeb = new File(buildDir, "qemu.deb")
         def unpackDir = new File(buildDir, "qemu_unpack")
-        def qemuBinary = new File(jniDir, qemuPackageName)
+        def qemuBinary = new File(jniDir, qemuBinaryName)
 
         // Only run if the binary doesn't already exist
         if (qemuBinary.exists()) {
@@ -126,10 +127,10 @@ task downloadAndUnpackQemu {
             workingDir unpackDir
         }
 
-        def sourceBinaryPath = "data/data/com.termux/files/usr/bin/" + qemuPackageName
+        def sourceBinaryPath = "data/data/com.termux/files/usr/bin/" + qemuBinaryName
         def sourceBinary = new File(unpackDir, sourceBinaryPath)
         if (!sourceBinary.exists()) {
-            throw new GradleException("QEMU binary not found in data.tar.xz.")
+            throw new GradleException("QEMU binary ($qemuBinaryName) not found in data.tar.xz.")
         }
 
         println ">>> Copying QEMU binary to jniLibs..."
