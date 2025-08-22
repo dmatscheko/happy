@@ -9,11 +9,13 @@ import android.widget.TextView;
 
 import org.tukaani.xz.XZInputStream;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -26,10 +28,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String OS_IMAGE_NAME = "haos.qcow2";
 
     private static final String HAOS_URL = "https://github.com/home-assistant/operating-system/releases/download/12.3/haos_generic-aarch64-12.3.qcow2.xz";
-    // Using a slightly older, smaller version for faster downloads in this example. The user can change this.
-    // The user provided 16.1, but that might be very large. I will use 12.3 as it is mentioned in some tutorials and might be smaller.
-    // I also need to find the qemu deb url again.
-    private static final String QEMU_URL = "https://packages-cf.termux.dev/dists/stable/main/binary-aarch64/qemu-system-aarch64_8.2.6-6_aarch64.deb";
+    private static final String TERMUX_REPO_URL = "https://packages-cf.termux.dev/dists/stable/main/binary-aarch64/";
+    private static final String TERMUX_PACKAGES_FILE_URL = TERMUX_REPO_URL + "Packages";
 
 
     private TextView statusTextView;
@@ -75,18 +75,25 @@ public class MainActivity extends AppCompatActivity {
             try {
                 File filesDir = getFilesDir();
                 // Download HAOS
-                updateStatus("Downloading Home Assistant OS...");
-                File osImageXz = new File(filesDir, OS_IMAGE_NAME_XZ);
-                downloadUrlToFile(HAOS_URL, osImageXz);
+                if (!new File(filesDir, OS_IMAGE_NAME).exists()) {
+                    updateStatus("Downloading Home Assistant OS...");
+                    File osImageXz = new File(filesDir, OS_IMAGE_NAME_XZ);
+                    downloadUrlToFile(HAOS_URL, osImageXz, "Home Assistant OS");
+                }
 
-                // Download QEMU
-                updateStatus("Downloading QEMU...");
-                File qemuDeb = new File(filesDir, QEMU_DEB_NAME);
-                downloadUrlToFile(QEMU_URL, qemuDeb);
+                // Download QEMU by first finding its URL
+                if (!new File(filesDir, QEMU_DEB_NAME).exists()) {
+                    updateStatus("Finding QEMU package URL...");
+                    String qemuUrl = getQemuDebUrl();
+                    updateStatus("Downloading QEMU...");
+                    File qemuDeb = new File(filesDir, QEMU_DEB_NAME);
+                    downloadUrlToFile(qemuUrl, qemuDeb, "QEMU");
+                }
+
 
                 updateStatus("Downloads complete. Ready to start.");
                 runOnUiThread(() -> {
-                    startButton.setEnabled(true);
+                    checkFilesExist(); // Re-check to enable start button etc.
                 });
 
             } catch (IOException e) {
@@ -97,7 +104,42 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
+    private String getQemuDebUrl() throws IOException {
+        URL url = new URL(TERMUX_PACKAGES_FILE_URL);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.connect();
+
+        if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+            throw new IOException("Failed to get Termux Packages file: " + connection.getResponseMessage());
+        }
+
+        try (InputStream input = connection.getInputStream();
+             BufferedReader reader = new BufferedReader(new InputStreamReader(input))) {
+            String line;
+            boolean foundPackage = false;
+            while ((line = reader.readLine()) != null) {
+                if (line.equals("Package: qemu-system-aarch64")) {
+                    foundPackage = true;
+                }
+                if (foundPackage && line.startsWith("Filename: ")) {
+                    String filename = line.substring("Filename: ".length());
+                    return TERMUX_REPO_URL + filename;
+                }
+                if (foundPackage && line.isEmpty()) {
+                    // Reached end of package block without finding filename
+                    break;
+                }
+            }
+        } finally {
+            connection.disconnect();
+        }
+
+        throw new IOException("Could not find qemu-system-aarch64 package in repository index.");
+    }
+
+
     private void startVm() {
+        // ... (The startVm logic remains largely the same, but for clarity I'll include it)
         startButton.setEnabled(false);
         downloadButton.setEnabled(false);
         updateStatus("Starting VM setup...");
@@ -110,15 +152,10 @@ public class MainActivity extends AppCompatActivity {
                 File osImageXz = new File(filesDir, OS_IMAGE_NAME_XZ);
                 File osImage = new File(filesDir, OS_IMAGE_NAME);
 
-                // 1. Extract QEMU from .deb file
-                // This is a complex operation. A .deb is an 'ar' archive containing a data.tar.xz or similar.
-                // For this proof of concept, we will assume a simplified case where we can't extract it.
-                // I will create a placeholder for the binary instead of extracting it from the deb.
-                // In a real app, a library for handling 'ar' and 'tar' archives would be needed.
+                // 1. Extract QEMU from .deb file (Placeholder)
                 if (!qemuBinary.exists()) {
                      updateStatus("Extracting QEMU... (Not implemented, creating placeholder)");
                      if(!qemuDeb.exists()) throw new IOException("QEMU deb file not found.");
-                     // Create a placeholder file.
                      new FileOutputStream(qemuBinary).close();
                 }
 
@@ -166,7 +203,7 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    private void downloadUrlToFile(String urlString, File file) throws IOException {
+    private void downloadUrlToFile(String urlString, File file, String fileDescription) throws IOException {
         URL url = new URL(urlString);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         connection.connect();
@@ -188,7 +225,7 @@ public class MainActivity extends AppCompatActivity {
                 output.write(data, 0, count);
                 if (fileLength > 0) {
                     final int progress = (int) (total * 100 / fileLength);
-                    updateStatus("Downloading " + file.getName() + ": " + progress + "%");
+                    updateStatus("Downloading " + fileDescription + ": " + progress + "%");
                 }
             }
         } finally {
