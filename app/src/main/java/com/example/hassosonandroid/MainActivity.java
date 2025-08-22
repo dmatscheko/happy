@@ -30,8 +30,10 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -47,6 +49,8 @@ public class MainActivity extends AppCompatActivity {
     private static final String TERMUX_REPO_URL = "https://packages.termux.dev/apt/termux-main/";
     private static final String TERMUX_PACKAGES_FILE_URL = TERMUX_REPO_URL + "dists/stable/main/binary-aarch64/Packages";
 
+    private enum UnpackMode { FILES_ONLY, SYMLINKS_ONLY }
+
     private static class PackageInfo {
         String packageName;
         String version;
@@ -56,7 +60,6 @@ public class MainActivity extends AppCompatActivity {
 
     private TextView statusTextView;
     private Button downloadButton, startButton, clearCacheButton, deleteAllButton;
-    private SharedPreferences prefs;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -68,7 +71,6 @@ public class MainActivity extends AppCompatActivity {
         startButton = findViewById(R.id.start_button);
         clearCacheButton = findViewById(R.id.clear_cache_button);
         deleteAllButton = findViewById(R.id.delete_all_button);
-        prefs = PreferenceManager.getDefaultSharedPreferences(this);
 
         downloadButton.setOnClickListener(v -> downloadFiles());
         startButton.setOnClickListener(v -> startVm());
@@ -84,43 +86,49 @@ public class MainActivity extends AppCompatActivity {
             try {
                 updateStatus("Downloading package index...");
                 Map<String, PackageInfo> packageDb = parsePackagesFile();
+                List<File> downloadedDebs = new ArrayList<>();
 
-                Set<String> packagesToInstall = new HashSet<>();
+                Set<String> packagesToProcess = new HashSet<>();
                 Set<String> processedPackages = new HashSet<>();
-                packagesToInstall.add("qemu-system-aarch64-headless");
+                packagesToProcess.add("qemu-system-aarch64-headless");
 
-                while (!packagesToInstall.isEmpty()) {
-                    String currentPackageName = packagesToInstall.iterator().next();
-                    packagesToInstall.remove(currentPackageName);
+                updateStatus("Resolving dependencies...");
+                while (!packagesToProcess.isEmpty()) {
+                    String currentPackageName = packagesToProcess.iterator().next();
+                    packagesToProcess.remove(currentPackageName);
                     if (processedPackages.contains(currentPackageName)) continue;
 
                     PackageInfo info = packageDb.get(currentPackageName);
                     if (info == null) {
-                        Log.w(TAG, "Package not found in DB, skipping: " + currentPackageName);
+                        Log.w(TAG, "Package not found, skipping: " + currentPackageName);
                         processedPackages.add(currentPackageName);
                         continue;
                     }
 
-                    String prefKey = "version_" + currentPackageName;
-                    String localVersion = prefs.getString(prefKey, null);
-                    if (!info.version.equals(localVersion)) {
-                        downloadAndUnpackPackage(info);
-                        prefs.edit().putString(prefKey, info.version).apply();
-                    } else {
-                        updateStatus("Package " + currentPackageName + " is up-to-date.");
-                    }
+                    File debFile = new File(getCacheDir(), info.filename.replace('/', '_'));
+                    downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, info.packageName);
+                    downloadedDebs.add(debFile);
 
                     if (info.depends != null && !info.depends.isEmpty()) {
                         String[] deps = info.depends.split(",\\s*");
                         for (String dep : deps) {
-                            String depName = dep.split("\\s+")[0];
-                            if (!processedPackages.contains(depName)) {
-                                packagesToInstall.add(depName);
-                            }
+                            packagesToProcess.add(dep.split("\\s+")[0]);
                         }
                     }
                     processedPackages.add(currentPackageName);
                 }
+
+                updateStatus("Unpacking files...");
+                for (File deb : downloadedDebs) {
+                    unpackDeb(deb, UnpackMode.FILES_ONLY);
+                }
+
+                updateStatus("Creating symbolic links...");
+                for (File deb : downloadedDebs) {
+                    unpackDeb(deb, UnpackMode.SYMLINKS_ONLY);
+                }
+
+                for (File deb : downloadedDebs) deb.delete();
 
                 File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
                 if (!osImage.exists()) {
@@ -140,23 +148,11 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    private void downloadAndUnpackPackage(PackageInfo info) throws Exception {
-        updateStatus("Processing " + info.packageName + "...");
-        File debFile = new File(getCacheDir(), info.filename.replace('/', '_'));
-        downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, info.packageName);
-        updateStatus("Unpacking " + info.packageName + "...");
-        unpackDeb(debFile);
-        debFile.delete();
-    }
-
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
-    private void unpackDeb(File debFile) throws Exception {
+    private void unpackDeb(File debFile, UnpackMode mode) throws Exception {
         File libDir = libDir();
         File binDir = binDir();
-
-        if (libDir.exists() && !libDir.isDirectory()) libDir.delete();
         if (!libDir.exists()) libDir.mkdirs();
-        if (binDir.exists() && !binDir.isDirectory()) binDir.delete();
         if (!binDir.exists()) binDir.mkdirs();
 
         try (ArArchiveInputStream arInput = new ArArchiveInputStream(new BufferedInputStream(new FileInputStream(debFile)))) {
@@ -168,26 +164,21 @@ public class MainActivity extends AppCompatActivity {
                         TarArchiveEntry tarEntry;
                         while ((tarEntry = tarInput.getNextTarEntry()) != null) {
                             if (tarEntry.isDirectory()) continue;
-                            String entryPath = tarEntry.getName();
+
                             File outputFile;
-                            if (entryPath.contains("/lib/")) {
-                                outputFile = new File(libDir, new File(entryPath).getName());
-                            } else if (entryPath.contains("/bin/")) {
-                                outputFile = new File(binDir, new File(entryPath).getName());
-                            } else {
-                                continue;
-                            }
+                            if (tarEntry.getName().contains("/lib/")) outputFile = new File(libDir, new File(tarEntry.getName()).getName());
+                            else if (tarEntry.getName().contains("/bin/")) outputFile = new File(binDir, new File(tarEntry.getName()).getName());
+                            else continue;
 
-                            if (outputFile.exists() || outputFile.isSymbolicLink()) {
-                                outputFile.delete();
-                            }
-
-                            if (tarEntry.isSymbolicLink()) {
-                                Os.symlink(tarEntry.getLinkName(), outputFile.getAbsolutePath());
-                            } else {
+                            boolean isSymlink = tarEntry.isSymbolicLink();
+                            if (mode == UnpackMode.FILES_ONLY && !isSymlink) {
+                                if (outputFile.exists()) outputFile.delete();
                                 try (OutputStream out = new FileOutputStream(outputFile)) {
                                     tarInput.transferTo(out);
                                 }
+                            } else if (mode == UnpackMode.SYMLINKS_ONLY && isSymlink) {
+                                if (outputFile.exists()) outputFile.delete();
+                                Os.symlink(tarEntry.getLinkName(), outputFile.getAbsolutePath());
                             }
                         }
                     }
@@ -341,6 +332,7 @@ public class MainActivity extends AppCompatActivity {
         File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
         if (osImage.exists()) osImage.delete();
 
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         SharedPreferences.Editor editor = prefs.edit();
         for (String key : prefs.getAll().keySet()) {
             if (key.startsWith("version_")) {
