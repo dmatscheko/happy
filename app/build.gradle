@@ -38,3 +38,87 @@ dependencies {
     androidTestImplementation 'androidx.test.ext:junit:1.1.5'
     androidTestImplementation 'androidx.test.espresso:espresso-core:3.5.1'
 }
+
+task downloadAndUnpackQemu {
+    description 'Downloads and unpacks the QEMU binary from the Termux repository.'
+    group 'Setup'
+
+    doLast {
+        def termuxRepoUrl = "https://packages.termux.dev/apt/termux-main/"
+        def packagesUrl = new URL(termuxRepoUrl + "dists/stable/main/binary-aarch64/Packages")
+        def qemuPackageName = "qemu-system-aarch64-headless"
+        def jniDir = new File(project.projectDir, "src/main/jniLibs/aarch64")
+        def buildDir = project.buildDir
+        def qemuDeb = new File(buildDir, "qemu.deb")
+        def unpackDir = new File(buildDir, "qemu_unpack")
+        def qemuBinary = new File(jniDir, qemuPackageName)
+
+        // Only run if the binary doesn't already exist
+        if (qemuBinary.exists()) {
+            println "QEMU binary already exists. Skipping download."
+            return
+        }
+
+        println ">>> Finding QEMU package URL..."
+        def qemuFilename = ""
+        packagesUrl.withReader { reader ->
+            def foundPackage = false
+            reader.eachLine { line ->
+                if (line.trim().isEmpty() && foundPackage) {
+                    return // break from eachLine
+                }
+                if (line == "Package: " + qemuPackageName) {
+                    foundPackage = true
+                }
+                if (foundPackage && line.startsWith("Filename: ")) {
+                    qemuFilename = line.substring("Filename: ".length())
+                }
+            }
+        }
+
+        if (qemuFilename.isEmpty()) {
+            throw new GradleException("Could not find $qemuPackageName in Packages index.")
+        }
+
+        def qemuUrl = new URL(termuxRepoUrl + qemuFilename)
+        println ">>> Downloading QEMU from $qemuUrl..."
+        qemuDeb.withOutputStream { outputStream ->
+            qemuUrl.withInputStream { inputStream ->
+                outputStream << inputStream
+            }
+        }
+
+        println ">>> Unpacking QEMU..."
+        unpackDir.mkdirs()
+        project.exec {
+            commandLine 'ar', 'x', qemuDeb.absolutePath
+            workingDir unpackDir
+        }
+
+        def dataFile = new File(unpackDir, "data.tar.xz")
+        if (!dataFile.exists()) {
+            throw new GradleException("data.tar.xz not found in .deb archive.")
+        }
+
+        project.exec {
+            commandLine 'tar', '-xf', dataFile.absolutePath
+            workingDir unpackDir
+        }
+
+        def sourceBinaryPath = "data/data/com.termux/files/usr/bin/" + qemuPackageName
+        def sourceBinary = new File(unpackDir, sourceBinaryPath)
+        if (!sourceBinary.exists()) {
+            throw new GradleException("QEMU binary not found in data.tar.xz.")
+        }
+
+        println ">>> Copying QEMU binary to jniLibs..."
+        jniDir.mkdirs()
+        sourceBinary.renameTo(qemuBinary)
+
+        println ">>> Cleaning up..."
+        qemuDeb.delete()
+        unpackDir.deleteDir()
+    }
+}
+
+preBuild.dependsOn downloadAndUnpackQemu
