@@ -1,13 +1,16 @@
 package com.example.hassosonandroid;
 
+import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
+import android.content.DialogInterface;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
 import android.util.Log;
 import android.widget.Button;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import org.apache.commons.compress.archivers.ar.ArArchiveInputStream;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
@@ -51,6 +54,8 @@ public class MainActivity extends AppCompatActivity {
     private TextView statusTextView;
     private Button downloadButton;
     private Button startButton;
+    private Button clearCacheButton;
+    private Button deleteAllButton;
     private SharedPreferences prefs;
 
     @Override
@@ -61,44 +66,79 @@ public class MainActivity extends AppCompatActivity {
         statusTextView = findViewById(R.id.textView);
         downloadButton = findViewById(R.id.download_button);
         startButton = findViewById(R.id.start_button);
+        clearCacheButton = findViewById(R.id.clear_cache_button);
+        deleteAllButton = findViewById(R.id.delete_all_button);
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
 
         downloadButton.setOnClickListener(v -> downloadFiles());
         startButton.setOnClickListener(v -> startVm());
+        clearCacheButton.setOnClickListener(v -> clearCache());
+        deleteAllButton.setOnClickListener(v -> confirmDeleteAllData());
+
 
         checkFilesExist();
     }
+
+    private void clearCache() {
+        File qemuDeb = new File(getFilesDir(), QEMU_DEB_NAME);
+        File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME_XZ);
+        if (qemuDeb.exists()) qemuDeb.delete();
+        if (osImageXz.exists()) osImageXz.delete();
+        Toast.makeText(this, "Cache cleared.", Toast.LENGTH_SHORT).show();
+        checkFilesExist();
+    }
+
+    private void confirmDeleteAllData() {
+        new AlertDialog.Builder(this)
+            .setTitle("Delete All Data?")
+            .setMessage("This will delete the QEMU binary and the Home Assistant OS image. All Home Assistant data will be lost. Are you sure?")
+            .setIcon(android.R.drawable.ic_dialog_alert)
+            .setPositiveButton(android.R.string.yes, (dialog, whichButton) -> deleteAllData())
+            .setNegativeButton(android.R.string.no, null).show();
+    }
+
+    private void deleteAllData() {
+        File qemuBinary = new File(getFilesDir(), QEMU_BINARY_NAME);
+        File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
+        if (qemuBinary.exists()) qemuBinary.delete();
+        if (osImage.exists()) osImage.delete();
+
+        // Clear saved version info
+        prefs.edit().remove(PREF_QEMU_VERSION).remove(PREF_QEMU_SHA256).apply();
+
+        Toast.makeText(this, "All data deleted.", Toast.LENGTH_SHORT).show();
+        checkFilesExist();
+    }
+
 
     private void checkFilesExist() {
         File qemuBinary = new File(getFilesDir(), QEMU_BINARY_NAME);
         File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
 
-        if (qemuBinary.exists() && osImage.exists()) {
-            startButton.setEnabled(true);
-            downloadButton.setEnabled(true);
-            updateStatus("Ready. Check for updates or start VM.");
+        boolean allExist = qemuBinary.exists() && osImage.exists();
+        startButton.setEnabled(allExist);
+        deleteAllButton.setEnabled(allExist);
+        downloadButton.setEnabled(true); // Can always check for updates
+
+        if (allExist) {
+            updateStatus("Ready. You can check for updates or start VM.");
         } else {
-            startButton.setEnabled(false);
-            downloadButton.setEnabled(true);
             updateStatus("Please download required files.");
         }
     }
 
+    // ... (rest of the file is the same as the previous version)
     private void downloadFiles() {
         downloadButton.setEnabled(false);
         updateStatus("Checking for new versions...");
 
         new Thread(() -> {
             try {
-                // 1. Get latest QEMU package info from server
                 PackageInfo serverInfo = getQemuPackageInfo();
                 File qemuDeb = new File(getFilesDir(), QEMU_DEB_NAME);
                 File qemuBinary = new File(getFilesDir(), QEMU_BINARY_NAME);
-
-                // 2. Get local QEMU package info from prefs
                 String localVersion = prefs.getString(PREF_QEMU_VERSION, null);
 
-                // 3. Decision logic for QEMU
                 boolean needsDownload = false;
                 if (!qemuBinary.exists()) {
                     updateStatus("QEMU binary not found. Downloading...");
@@ -107,33 +147,25 @@ public class MainActivity extends AppCompatActivity {
                     updateStatus("New version of QEMU found. Downloading...");
                     needsDownload = true;
                 } else {
-                    // We could validate the hash of the binary here, but skipping for simplicity.
                     updateStatus("QEMU is up-to-date.");
                 }
 
                 if (needsDownload) {
                     String qemuUrl = TERMUX_REPO_URL + serverInfo.filename;
                     downloadUrlToFile(qemuUrl, qemuDeb, "QEMU");
-
-                    // Verify downloaded .deb file
                     String downloadedSha = calculateSHA256(qemuDeb);
                     if (!serverInfo.sha256.equalsIgnoreCase(downloadedSha)) {
                         throw new IOException("Downloaded QEMU .deb file is corrupt.");
                     }
-
-                    // Unpack
                     updateStatus("Unpacking QEMU...");
                     unpackDeb(qemuDeb, qemuBinary);
-                    qemuDeb.delete(); // Clean up
-
-                    // Save new metadata
+                    qemuDeb.delete();
                     prefs.edit()
                         .putString(PREF_QEMU_VERSION, serverInfo.version)
-                        .putString(PREF_QEMU_SHA256, serverInfo.sha256) // Note: this is hash of .deb, not binary
+                        .putString(PREF_QEMU_SHA256, serverInfo.sha256)
                         .apply();
                 }
 
-                // 4. Handle HAOS image
                 File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
                 if (!osImage.exists()) {
                     File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME_XZ);
@@ -159,21 +191,17 @@ public class MainActivity extends AppCompatActivity {
             org.apache.commons.compress.archivers.ArchiveEntry entry;
             while ((entry = arInput.getNextEntry()) != null) {
                 if (entry.getName().equals("data.tar.xz")) {
-                    // We've found the data payload. Now we need to untar and un-xz it.
-                    // The libraries are nested. XZ -> TAR -> Files
                     XZInputStream xzInput = new XZInputStream(arInput);
                     TarArchiveInputStream tarInput = new TarArchiveInputStream(xzInput);
-
                     org.apache.commons.compress.archivers.ArchiveEntry tarEntry;
                     while ((tarEntry = tarInput.getNextEntry()) != null) {
-                        // The binary is at ./data/data/com.termux/files/usr/bin/qemu-system-aarch64
                         if (tarEntry.getName().endsWith("/" + QEMU_BINARY_NAME)) {
                             updateStatus("Extracting " + QEMU_BINARY_NAME + "...");
                             try (OutputStream out = new FileOutputStream(destinationBinary)) {
                                 tarInput.transferTo(out);
                             }
                             tarInput.close();
-                            return; // We're done
+                            return;
                         }
                     }
                     tarInput.close();
@@ -200,31 +228,41 @@ public class MainActivity extends AppCompatActivity {
                 String qemuPath = qemuBinary.getAbsolutePath();
                 String osImagePath = osImage.getAbsolutePath();
 
-                // Construct the full command to be run as root
-                String command = "chmod 755 " + qemuPath + " && " +
-                                 qemuPath +
-                                 " -m 2048" +
-                                 " -M virt" +
-                                 " -cpu cortex-a57" +
-                                 " -smp 2" +
-                                 " -hda " + osImagePath +
-                                 " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
-                                 " -device virtio-net-pci,netdev=net0" +
-                                 " -vnc 0.0.0.0:0";
+                String command = "chmod 755 " + qemuPath + " && " + qemuPath + " -m 2048" + " -M virt" + " -cpu cortex-a57" + " -smp 2" + " -hda " + osImagePath + " -netdev user,id=net0,hostfwd=tcp::8123-:8123" + " -device virtio-net-pci,netdev=net0" + " -vnc 0.0.0.0:0";
 
                 updateStatus("Executing command as root...");
                 Process suProcess = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
 
-                // We can optionally read the output/error streams here to show in the app
+                new Thread(() -> {
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(suProcess.getInputStream()))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            Log.d(TAG, "QEMU stdout: " + line);
+                        }
+                    } catch (IOException e) {
+                        Log.e(TAG, "Error reading QEMU stdout", e);
+                    }
+                }).start();
 
-                suProcess.waitFor(); // Wait for the process to exit (or run in background)
+                final StringBuilder errorOutput = new StringBuilder();
+                new Thread(() -> {
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(suProcess.getErrorStream()))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            Log.e(TAG, "QEMU stderr: " + line);
+                            errorOutput.append(line).append("\n");
+                        }
+                    } catch (IOException e) {
+                        Log.e(TAG, "Error reading QEMU stderr", e);
+                    }
+                }).start();
 
-                if (suProcess.exitValue() == 0) {
+                int exitValue = suProcess.waitFor();
+
+                if (exitValue == 0) {
                      updateStatus("VM process started! Access HA on http://localhost:8123 or VNC on port 5900. App can be closed.");
                 } else {
-                    // This part may not be reached if QEMU runs indefinitely.
-                    // Reading the error stream would be more useful.
-                    updateStatus("VM process exited with an error.");
+                    updateStatus("VM process exited with error code " + exitValue + ".\n" + "Error: " + errorOutput.toString());
                 }
 
             } catch (Exception e) {

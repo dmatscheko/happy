@@ -10,9 +10,9 @@ It needs root access to execute the QEMU binary from the app's private data dire
 
 The application is designed to be self-contained. On first run, the user must click the "Download Files" button, which performs the following steps:
 
-1.  **Downloads QEMU:** The app fetches the latest package index from the official Termux repository to find the correct URL for the `qemu-system-aarch64` package. It then downloads and validates this package.
+1.  **Downloads QEMU:** The app fetches the latest package index from the official Termux repository (`https://packages.termux.dev/apt/termux-main/`) to find the correct URL for the `qemu-system-aarch64` package. It then downloads and validates this package.
 2.  **Unpacks QEMU:** Using an embedded Java library, the app unpacks the downloaded `.deb` archive and extracts the QEMU executable.
-3.  **Downloads Home Assistant OS:** The app downloads a compatible `.qcow2` disk image for Home Assistant OS.
+3.  **Downloads Home Assistant OS:** The app downloads a compatible `.qcow2` disk image for Home Assistant OS from the official GitHub releases (`https://github.com/home-assistant/operating-system/releases`).
 4.  **Decompresses OS Image:** The `.qcow2.xz` image is decompressed.
 
 Once the setup is complete, the user can click "Start VM". This will use root (`su`) to execute the QEMU binary with the appropriate parameters, including forwarding port 8123 for the web UI and starting a VNC server on port 5900 for display.
