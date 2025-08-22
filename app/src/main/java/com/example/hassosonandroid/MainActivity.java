@@ -26,6 +26,10 @@ import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -33,17 +37,17 @@ public class MainActivity extends AppCompatActivity {
     private static final String QEMU_BINARY_NAME = "qemu-system-aarch64";
     private static final String OS_IMAGE_NAME = "haos.qcow2";
     private static final String LIB_DIR_NAME = "lib";
+    private static final String BIN_DIR_NAME = "bin";
 
     private static final String HAOS_URL = "https://github.com/home-assistant/operating-system/releases/download/12.3/haos_generic-aarch64-12.3.qcow2.xz";
     private static final String TERMUX_REPO_URL = "https://packages.termux.dev/apt/termux-main/";
     private static final String TERMUX_PACKAGES_FILE_URL = TERMUX_REPO_URL + "dists/stable/main/binary-aarch64/Packages";
 
-    private static final String PREF_QEMU_VERSION = "qemu_version";
-    private static final String PREF_LIBFDT_VERSION = "libfdt_version";
-
     private static class PackageInfo {
-        String filename;
+        String packageName;
         String version;
+        String filename;
+        String depends;
     }
 
     private TextView statusTextView;
@@ -71,54 +75,76 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void downloadFiles() {
-        downloadButton.setEnabled(false);
-        updateStatus("Checking for dependencies...");
+        setButtonsEnabled(false);
         new Thread(() -> {
             try {
-                File libDir = new File(getFilesDir(), LIB_DIR_NAME);
-                if (!libDir.exists()) libDir.mkdirs();
+                updateStatus("Downloading package index...");
+                Map<String, PackageInfo> packageDb = parsePackagesFile();
 
-                downloadAndUnpackPackage("qemu-system-aarch64-headless", QEMU_BINARY_NAME, getFilesDir(), PREF_QEMU_VERSION);
-                downloadAndUnpackPackage("libfdt", "libfdt.so.1", libDir, PREF_LIBFDT_VERSION);
+                Set<String> packagesToInstall = new HashSet<>();
+                Set<String> processedPackages = new HashSet<>();
+                packagesToInstall.add("qemu-system-aarch64-headless");
+
+                while (!packagesToInstall.isEmpty()) {
+                    String currentPackageName = packagesToInstall.iterator().next();
+                    packagesToInstall.remove(currentPackageName);
+                    if (processedPackages.contains(currentPackageName)) continue;
+
+                    PackageInfo info = packageDb.get(currentPackageName);
+                    if (info == null) {
+                        Log.w(TAG, "Package not found in DB, skipping: " + currentPackageName);
+                        processedPackages.add(currentPackageName);
+                        continue;
+                    }
+
+                    String prefKey = "version_" + currentPackageName;
+                    String localVersion = prefs.getString(prefKey, null);
+                    if (!info.version.equals(localVersion)) {
+                        downloadAndUnpackPackage(info);
+                        prefs.edit().putString(prefKey, info.version).apply();
+                    } else {
+                        updateStatus("Package " + currentPackageName + " is up-to-date.");
+                    }
+
+                    if (info.depends != null && !info.depends.isEmpty()) {
+                        String[] deps = info.depends.split(",\\s*");
+                        for (String dep : deps) {
+                            String depName = dep.split("\\s+")[0];
+                            if (!processedPackages.contains(depName)) {
+                                packagesToInstall.add(depName);
+                            }
+                        }
+                    }
+                    processedPackages.add(currentPackageName);
+                }
 
                 File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
                 if (!osImage.exists()) {
                     File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
                     downloadUrlToFile(HAOS_URL, osImageXz, "Home Assistant OS");
-                    updateStatus("Decompressing OS image...");
                     decompressXz(osImageXz, osImage);
                     osImageXz.delete();
                 }
 
-                updateStatus("Setup complete. Ready to start VM.");
-                runOnUiThread(this::checkFilesExist);
+                updateStatus("Setup complete! Ready to start VM.");
             } catch (Exception e) {
                 updateStatus("Error during setup: " + e.getMessage());
                 Log.e(TAG, "Error in download/setup thread", e);
-                runOnUiThread(() -> downloadButton.setEnabled(true));
+            } finally {
+                runOnUiThread(this::checkFilesExist);
             }
         }).start();
     }
 
-    private void downloadAndUnpackPackage(String packageName, String targetFileName, File targetDir, String versionPrefKey) throws Exception {
-        updateStatus("Checking " + packageName + "...");
-        PackageInfo info = getPackageInfo(packageName);
-        String localVersion = prefs.getString(versionPrefKey, null);
-        File targetFile = new File(targetDir, targetFileName);
-
-        if (!info.version.equals(localVersion) || !targetFile.exists()) {
-            updateStatus("Downloading " + packageName + "...");
-            File debFile = new File(getCacheDir(), info.filename.replace('/', '_'));
-            downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, packageName);
-
-            updateStatus("Unpacking " + packageName + "...");
-            unpackDeb(debFile, targetFileName, targetFile);
-            debFile.delete();
-            prefs.edit().putString(versionPrefKey, info.version).apply();
-        }
+    private void downloadAndUnpackPackage(PackageInfo info) throws Exception {
+        updateStatus("Processing " + info.packageName + "...");
+        File debFile = new File(getCacheDir(), info.filename.replace('/', '_'));
+        downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, info.packageName);
+        unpackDeb(debFile);
+        debFile.delete();
     }
 
-    private void unpackDeb(File debFile, String targetFileName, File destinationFile) throws IOException {
+    private void unpackDeb(File debFile) throws IOException {
         try (ArArchiveInputStream arInput = new ArArchiveInputStream(new BufferedInputStream(new FileInputStream(debFile)))) {
             org.apache.commons.compress.archivers.ArchiveEntry entry;
             while ((entry = arInput.getNextEntry()) != null) {
@@ -127,39 +153,71 @@ public class MainActivity extends AppCompatActivity {
                     try (TarArchiveInputStream tarInput = new TarArchiveInputStream(xzInput)) {
                         org.apache.commons.compress.archivers.ArchiveEntry tarEntry;
                         while ((tarEntry = tarInput.getNextEntry()) != null) {
-                            if (tarEntry.getName().endsWith("/" + targetFileName)) {
-                                try (OutputStream out = new FileOutputStream(destinationFile)) {
-                                    tarInput.transferTo(out);
-                                }
-                                return;
+                            if (tarEntry.isDirectory()) continue;
+                            String entryPath = tarEntry.getName();
+                            File outputFile;
+                            if (entryPath.contains("/lib/")) {
+                                outputFile = new File(libDir(), new File(entryPath).getName());
+                            } else if (entryPath.contains("/bin/")) {
+                                outputFile = new File(binDir(), new File(entryPath).getName());
+                            } else {
+                                continue;
+                            }
+                            try (OutputStream out = new FileOutputStream(outputFile)) {
+                                tarInput.transferTo(out);
                             }
                         }
                     }
+                    return;
                 }
             }
         }
-        throw new IOException("Could not find " + targetFileName + " in " + debFile.getName());
+    }
+
+    private Map<String, PackageInfo> parsePackagesFile() throws IOException {
+        Map<String, PackageInfo> db = new HashMap<>();
+        URL url = new URL(TERMUX_PACKAGES_FILE_URL);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        try {
+            connection.connect();
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) throw new IOException("Failed to get Termux Packages file");
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
+                String line;
+                PackageInfo currentInfo = null;
+                while ((line = reader.readLine()) != null) {
+                    if (line.startsWith("Package: ")) {
+                        if (currentInfo != null) db.put(currentInfo.packageName, currentInfo);
+                        currentInfo = new PackageInfo();
+                        currentInfo.packageName = line.substring(9);
+                    } else if (currentInfo != null) {
+                        if (line.startsWith("Filename: ")) currentInfo.filename = line.substring(10);
+                        else if (line.startsWith("Version: ")) currentInfo.version = line.substring(9);
+                        else if (line.startsWith("Depends: ")) currentInfo.depends = line.substring(9);
+                    }
+                }
+                if (currentInfo != null) db.put(currentInfo.packageName, currentInfo);
+            }
+        } finally {
+            connection.disconnect();
+        }
+        return db;
     }
 
     private void startVm() {
-        startButton.setEnabled(false);
-        downloadButton.setEnabled(false);
+        setButtonsEnabled(false);
         updateStatus("Starting VM...");
-
         new Thread(() -> {
             try {
-                File qemuBinary = new File(getFilesDir(), QEMU_BINARY_NAME);
+                File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
                 File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
-                File libDir = new File(getFilesDir(), LIB_DIR_NAME);
+                if (!qemuBinary.exists() || !osImage.exists()) throw new IOException("Required files not found.");
 
-                String qemuPath = qemuBinary.getAbsolutePath();
-                String osImagePath = osImage.getAbsolutePath();
-
-                String command = "export LD_LIBRARY_PATH=" + libDir.getAbsolutePath() + " && " +
-                                 "chmod 755 " + qemuPath + " && " +
-                                 qemuPath +
+                String command = "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
+                                 "export LD_LIBRARY_PATH=" + libDir().getAbsolutePath() + " && " +
+                                 "chmod 755 " + qemuBinary.getAbsolutePath() + " && " +
+                                 qemuBinary.getAbsolutePath() +
                                  " -m 2048 -M virt -cpu cortex-a57 -smp 2" +
-                                 " -hda " + osImagePath +
+                                 " -hda " + osImage.getAbsolutePath() +
                                  " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
                                  " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0";
 
@@ -191,42 +249,9 @@ public class MainActivity extends AppCompatActivity {
                 updateStatus("Error starting VM: " + e.getMessage());
                 Log.e(TAG, "Error in startVm thread", e);
             } finally {
-                runOnUiThread(() -> checkFilesExist());
+                runOnUiThread(this::checkFilesExist);
             }
         }).start();
-    }
-
-    private PackageInfo getPackageInfo(String packageName) throws IOException {
-        URL url = new URL(TERMUX_PACKAGES_FILE_URL);
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        try {
-            connection.connect();
-            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) throw new IOException("Failed to get Termux Packages file");
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
-                String line;
-                boolean foundPackage = false;
-                PackageInfo info = new PackageInfo();
-                while ((line = reader.readLine()) != null) {
-                    if (line.isEmpty()) {
-                        if (foundPackage) {
-                            if (info.filename != null && info.version != null) return info;
-                            foundPackage = false;
-                        }
-                        continue;
-                    }
-                    if (line.equals("Package: " + packageName)) {
-                        foundPackage = true;
-                    }
-                    if (foundPackage) {
-                        if (line.startsWith("Filename: ")) info.filename = line.substring(10);
-                        else if (line.startsWith("Version: ")) info.version = line.substring(9);
-                    }
-                }
-            }
-        } finally {
-            connection.disconnect();
-        }
-        throw new IOException("Could not find " + packageName + " in index.");
     }
 
     private void decompressXz(File source, File dest) throws IOException {
@@ -268,54 +293,65 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void clearCache() {
-        File qemuDeb = new File(getCacheDir(), "qemu.deb"); // Note: Using getCacheDir() for temp files
+        File cacheDir = getCacheDir();
+        for(File file: cacheDir.listFiles()) file.delete();
         File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
-        if (qemuDeb.exists()) qemuDeb.delete();
-        if (osImageXz.exists()) osImageXz.delete();
+        if(osImageXz.exists()) osImageXz.delete();
         Toast.makeText(this, "Cache cleared.", Toast.LENGTH_SHORT).show();
-        checkFilesExist();
     }
 
     private void confirmDeleteAllData() {
         new AlertDialog.Builder(this)
             .setTitle("Delete All Data?")
-            .setMessage("This will delete the QEMU binary, its libraries, and the Home Assistant OS image. All Home Assistant data will be lost. Are you sure?")
+            .setMessage("This will delete QEMU, its libraries, and the Home Assistant OS image. All Home Assistant data will be lost. Are you sure?")
             .setIcon(android.R.drawable.ic_dialog_alert)
             .setPositiveButton(android.R.string.yes, (dialog, whichButton) -> deleteAllData())
             .setNegativeButton(android.R.string.no, null).show();
     }
 
     private void deleteAllData() {
-        File qemuBinary = new File(getFilesDir(), QEMU_BINARY_NAME);
+        deleteRecursive(binDir());
+        deleteRecursive(libDir());
         File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
-        File libDir = new File(getFilesDir(), LIB_DIR_NAME);
-
-        if (qemuBinary.exists()) qemuBinary.delete();
         if (osImage.exists()) osImage.delete();
-        if (libDir.exists()) {
-            for(File file: libDir.listFiles()) file.delete();
-            libDir.delete();
-        }
 
-        prefs.edit().remove(PREF_QEMU_VERSION).remove(PREF_LIBFDT_VERSION).apply();
+        // Clear all version prefs
+        prefs.edit().clear().apply();
+
         Toast.makeText(this, "All data deleted.", Toast.LENGTH_SHORT).show();
         checkFilesExist();
     }
 
+    void deleteRecursive(File fileOrDirectory) {
+        if (fileOrDirectory.isDirectory())
+            for (File child : fileOrDirectory.listFiles())
+                deleteRecursive(child);
+        fileOrDirectory.delete();
+    }
+
     private void checkFilesExist() {
-        File qemuBinary = new File(getFilesDir(), QEMU_BINARY_NAME);
+        File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
         File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
         boolean allExist = qemuBinary.exists() && osImage.exists();
 
         startButton.setEnabled(allExist);
         deleteAllButton.setEnabled(allExist);
-        clearCacheButton.setEnabled(true); // Can always try to clear
-        downloadButton.setEnabled(true);
+        setButtonsEnabled(true);
 
         if (allExist) {
             updateStatus("Ready. You can check for updates or start VM.");
         } else {
             updateStatus("Please download required files.");
         }
+    }
+
+    private File binDir() { return new File(getFilesDir(), BIN_DIR_NAME); }
+    private File libDir() { return new File(getFilesDir(), LIB_DIR_NAME); }
+
+    private void setButtonsEnabled(boolean enabled) {
+        downloadButton.setEnabled(enabled);
+        startButton.setEnabled(enabled);
+        clearCacheButton.setEnabled(enabled);
+        deleteAllButton.setEnabled(enabled);
     }
 }
