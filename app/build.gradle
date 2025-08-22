@@ -117,7 +117,6 @@ task downloadAndUnpackQemu {
             }
         }
 
-        def dataFile = new File(unpackDir, "data.tar.xz")
         if (!dataFile.exists()) {
             throw new GradleException("data.tar.xz not found in .deb archive.")
         }
