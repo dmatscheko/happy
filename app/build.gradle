@@ -99,6 +99,14 @@ task downloadAndUnpackQemu {
 
         println ">>> Unpacking QEMU..."
         unpackDir.mkdirs()
+
+        println ">>> Listing archive contents..."
+        project.exec {
+            commandLine 'ar', 't', qemuDeb.absolutePath
+            workingDir unpackDir
+        }
+
+        println ">>> Attempting to extract archive..."
         project.exec {
             commandLine 'ar', 'x', qemuDeb.absolutePath
             workingDir unpackDir
