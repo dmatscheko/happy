@@ -178,7 +178,9 @@ public class MainActivity extends AppCompatActivity {
                                 continue;
                             }
 
-                            if (outputFile.exists()) outputFile.delete();
+                            if (outputFile.exists() || outputFile.isSymbolicLink()) {
+                                outputFile.delete();
+                            }
 
                             if (tarEntry.isSymbolicLink()) {
                                 Os.symlink(tarEntry.getLinkName(), outputFile.getAbsolutePath());
