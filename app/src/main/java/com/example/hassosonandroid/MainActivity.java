@@ -122,6 +122,7 @@ public class MainActivity extends AppCompatActivity {
                 if (!osImage.exists()) {
                     File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
                     downloadUrlToFile(HAOS_URL, osImageXz, "Home Assistant OS");
+                    updateStatus("Unpacking Home Assistant OS image...");
                     decompressXz(osImageXz, osImage);
                     osImageXz.delete();
                 }
@@ -140,6 +141,7 @@ public class MainActivity extends AppCompatActivity {
         updateStatus("Processing " + info.packageName + "...");
         File debFile = new File(getCacheDir(), info.filename.replace('/', '_'));
         downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, info.packageName);
+        updateStatus("Unpacking " + info.packageName + "...");
         unpackDeb(debFile);
         debFile.delete();
     }
@@ -148,10 +150,8 @@ public class MainActivity extends AppCompatActivity {
         File libDir = libDir();
         File binDir = binDir();
 
-        // Ensure target directories exist and are, in fact, directories
         if (libDir.exists() && !libDir.isDirectory()) libDir.delete();
         if (!libDir.exists()) libDir.mkdirs();
-
         if (binDir.exists() && !binDir.isDirectory()) binDir.delete();
         if (!binDir.exists()) binDir.mkdirs();
 
@@ -222,12 +222,14 @@ public class MainActivity extends AppCompatActivity {
                 File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
                 if (!qemuBinary.exists() || !osImage.exists()) throw new IOException("Required files not found.");
 
-                String command = "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
-                                 "export LD_LIBRARY_PATH=" + libDir().getAbsolutePath() + " && " +
-                                 "chmod 755 " + qemuBinary.getAbsolutePath() + " && " +
-                                 qemuBinary.getAbsolutePath() +
+                String qemuPath = qemuBinary.getAbsolutePath();
+                String osImagePath = osImage.getAbsolutePath();
+
+                String command = "chmod 755 " + qemuPath + " && " +
+                                 "LD_LIBRARY_PATH=" + libDir().getAbsolutePath() +
+                                 " " + qemuPath +
                                  " -m 2048 -M virt -cpu cortex-a57 -smp 2" +
-                                 " -hda " + osImage.getAbsolutePath() +
+                                 " -hda " + osImagePath +
                                  " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
                                  " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0";
 
@@ -265,6 +267,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void decompressXz(File source, File dest) throws IOException {
+        updateStatus("Decompressing " + source.getName() + "...");
         try (InputStream in = new XZInputStream(new FileInputStream(source)); OutputStream out = new FileOutputStream(dest)) {
             byte[] buffer = new byte[8192];
             int read;
@@ -304,7 +307,9 @@ public class MainActivity extends AppCompatActivity {
 
     private void clearCache() {
         File cacheDir = getCacheDir();
-        for(File file: cacheDir.listFiles()) file.delete();
+        if (cacheDir.exists()) {
+            for(File file: cacheDir.listFiles()) file.delete();
+        }
         File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
         if(osImageXz.exists()) osImageXz.delete();
         Toast.makeText(this, "Cache cleared.", Toast.LENGTH_SHORT).show();
@@ -325,17 +330,24 @@ public class MainActivity extends AppCompatActivity {
         File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
         if (osImage.exists()) osImage.delete();
 
-        // Clear all version prefs
-        prefs.edit().clear().apply();
+        SharedPreferences.Editor editor = prefs.edit();
+        for (String key : prefs.getAll().keySet()) {
+            if (key.startsWith("version_")) {
+                editor.remove(key);
+            }
+        }
+        editor.apply();
 
         Toast.makeText(this, "All data deleted.", Toast.LENGTH_SHORT).show();
         checkFilesExist();
     }
 
     void deleteRecursive(File fileOrDirectory) {
-        if (fileOrDirectory.isDirectory())
-            for (File child : fileOrDirectory.listFiles())
+        if (fileOrDirectory.exists() && fileOrDirectory.isDirectory()) {
+            for (File child : fileOrDirectory.listFiles()) {
                 deleteRecursive(child);
+            }
+        }
         fileOrDirectory.delete();
     }
 
@@ -346,7 +358,8 @@ public class MainActivity extends AppCompatActivity {
 
         startButton.setEnabled(allExist);
         deleteAllButton.setEnabled(allExist);
-        setButtonsEnabled(true);
+        clearCacheButton.setEnabled(true);
+        downloadButton.setEnabled(true);
 
         if (allExist) {
             updateStatus("Ready. You can check for updates or start VM.");
