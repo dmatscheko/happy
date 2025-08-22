@@ -98,13 +98,13 @@ public class MainActivity extends AppCompatActivity {
 
                 updateStatus("Resolving dependencies...");
                 while (!packagesToProcess.isEmpty()) {
-                    String pkgName = packagesToProcess.iterator().next();
-                    packagesToProcess.remove(pkgName);
-                    if (processedPackages.contains(pkgName)) continue;
+                    String currentPackageName = packagesToProcess.iterator().next();
+                    packagesToProcess.remove(currentPackageName);
+                    if (processedPackages.contains(currentPackageName)) continue;
 
                     try {
-                        PackageInfo info = packageDb.get(pkgName);
-                        if (info == null) throw new IOException("Package not found in index.");
+                        PackageInfo info = packageDb.get(currentPackageName);
+                        if (info == null) throw new IOException("Package not found in index: " + currentPackageName);
 
                         File debFile = new File(getCacheDir(), info.filename.replace('/', '_'));
                         downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, info.packageName);
@@ -116,11 +116,11 @@ public class MainActivity extends AppCompatActivity {
                             }
                         }
                     } catch (Exception e) {
-                        String warningMsg = "Warning: Failed to process package " + pkgName + ": " + e.getMessage();
+                        String warningMsg = "Warning: Failed to process package " + currentPackageName + ": " + e.getMessage();
                         Log.w(TAG, warningMsg);
                         warnings.append(warningMsg).append("\n");
                     } finally {
-                        processedPackages.add(pkgName);
+                        processedPackages.add(currentPackageName);
                     }
                 }
 
@@ -172,22 +172,26 @@ public class MainActivity extends AppCompatActivity {
                     try (TarArchiveInputStream tarInput = new TarArchiveInputStream(xzInput)) {
                         TarArchiveEntry tarEntry;
                         while ((tarEntry = tarInput.getNextTarEntry()) != null) {
+                            if (tarEntry.isDirectory()) continue;
+
                             String entryPath = tarEntry.getName();
                             File outputFile;
                             if (entryPath.contains("/lib/")) outputFile = new File(libDir, new File(entryPath).getName());
                             else if (entryPath.contains("/bin/")) outputFile = new File(binDir, new File(entryPath).getName());
                             else continue;
 
-                            boolean isSymlink = tarEntry.isSymbolicLink();
+                            if (outputFile.exists()) outputFile.delete();
 
-                            if(mode == UnpackMode.FILES_ONLY && !isSymlink) {
-                                if (outputFile.exists()) outputFile.delete();
-                                try (OutputStream out = new FileOutputStream(outputFile)) {
-                                    tarInput.transferTo(out);
+                            if (isSymbolicLink(tarEntry)) {
+                                if (mode == UnpackMode.SYMLINKS_ONLY) {
+                                    Os.symlink(tarEntry.getLinkName(), outputFile.getAbsolutePath());
                                 }
-                            } else if (mode == UnpackMode.SYMLINKS_ONLY && isSymlink) {
-                                if (outputFile.exists()) outputFile.delete();
-                                Os.symlink(tarEntry.getLinkName(), outputFile.getAbsolutePath());
+                            } else {
+                                if (mode == UnpackMode.FILES_ONLY) {
+                                    try (OutputStream out = new FileOutputStream(outputFile)) {
+                                        tarInput.transferTo(out);
+                                    }
+                                }
                             }
                         }
                     }
@@ -197,5 +201,198 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    // ... (All other methods are the same as the previous final version)
+    private boolean isSymbolicLink(TarArchiveEntry entry) {
+        return entry.isSymbolicLink();
+    }
+
+    private Map<String, PackageInfo> parsePackagesFile() throws IOException {
+        Map<String, PackageInfo> db = new HashMap<>();
+        URL url = new URL(TERMUX_PACKAGES_FILE_URL);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        try {
+            connection.connect();
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) throw new IOException("Failed to get Termux Packages file");
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
+                String line;
+                PackageInfo currentInfo = null;
+                while ((line = reader.readLine()) != null) {
+                    if (line.startsWith("Package: ")) {
+                        if (currentInfo != null) db.put(currentInfo.packageName, currentInfo);
+                        currentInfo = new PackageInfo();
+                        currentInfo.packageName = line.substring(9);
+                    } else if (currentInfo != null) {
+                        if (line.startsWith("Filename: ")) currentInfo.filename = line.substring(10);
+                        else if (line.startsWith("Version: ")) currentInfo.version = line.substring(9);
+                        else if (line.startsWith("Depends: ")) currentInfo.depends = line.substring(9);
+                    }
+                }
+                if (currentInfo != null) db.put(currentInfo.packageName, currentInfo);
+            }
+        } finally {
+            connection.disconnect();
+        }
+        return db;
+    }
+
+    private void startVm() {
+        setAllButtonsEnabled(false);
+        updateStatus("Starting VM...");
+        new Thread(() -> {
+            try {
+                File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
+                File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
+                if (!qemuBinary.exists() || !osImage.exists()) throw new IOException("Required files not found.");
+
+                String command = "chmod -R 755 " + binDir().getAbsolutePath() + " && " +
+                                 "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
+                                 "export LD_LIBRARY_PATH=" + libDir().getAbsolutePath() + " && " +
+                                 qemuBinary.getAbsolutePath() +
+                                 " -m 2048 -M virt -cpu cortex-a57 -smp 2" +
+                                 " -hda " + osImage.getAbsolutePath() +
+                                 " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
+                                 " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0";
+
+                Process suProcess = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
+
+                new Thread(() -> {
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(suProcess.getInputStream()))) {
+                        String line; while ((line = reader.readLine()) != null) Log.d(TAG, "QEMU stdout: " + line);
+                    } catch (IOException e) { Log.e(TAG, "Error reading QEMU stdout", e); }
+                }).start();
+
+                final StringBuilder errorOutput = new StringBuilder();
+                new Thread(() -> {
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(suProcess.getErrorStream()))) {
+                        String line; while ((line = reader.readLine()) != null) {
+                            Log.e(TAG, "QEMU stderr: " + line);
+                            errorOutput.append(line).append("\n");
+                        }
+                    } catch (IOException e) { Log.e(TAG, "Error reading QEMU stderr", e); }
+                }).start();
+
+                int exitValue = suProcess.waitFor();
+                if (exitValue != 0) {
+                    updateStatus("VM process exited with error code " + exitValue + ".\n" + "Error: " + errorOutput.toString());
+                } else {
+                    updateStatus("VM process started successfully (but has exited).");
+                }
+            } catch (Exception e) {
+                updateStatus("Error starting VM: " + e.getMessage());
+                Log.e(TAG, "Error in startVm thread", e);
+            } finally {
+                runOnUiThread(this::checkFilesExistAndUpdateUi);
+            }
+        }).start();
+    }
+
+    private void decompressXz(File source, File dest) throws IOException {
+        updateStatus("Unpacking " + source.getName() + "...");
+        try (InputStream in = new XZInputStream(new FileInputStream(source)); OutputStream out = new FileOutputStream(dest)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
+        }
+    }
+
+    private void downloadUrlToFile(String urlString, File file, String fileDescription) throws IOException {
+        URL url = new URL(urlString);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        try {
+            connection.connect();
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
+                throw new IOException("Server returned HTTP " + connection.getResponseCode() + " " + connection.getResponseMessage());
+            }
+            try (InputStream input = connection.getInputStream(); OutputStream output = new FileOutputStream(file)) {
+                byte[] data = new byte[4096];
+                long total = 0;
+                int count;
+                while ((count = input.read(data)) != -1) {
+                    total += count;
+                    output.write(data, 0, count);
+                }
+            }
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private void updateStatus(final String message) {
+        runOnUiThread(() -> statusTextView.setText(message));
+    }
+
+    private void clearCache() {
+        File cacheDir = getCacheDir();
+        if (cacheDir.exists()) {
+            for(File file: cacheDir.listFiles()) file.delete();
+        }
+        File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
+        if(osImageXz.exists()) osImageXz.delete();
+        Toast.makeText(this, "Cache cleared.", Toast.LENGTH_SHORT).show();
+    }
+
+    private void confirmDeleteAllData() {
+        new AlertDialog.Builder(this)
+            .setTitle("Delete All Data?")
+            .setMessage("This will delete QEMU, its libraries, and the Home Assistant OS image. All Home Assistant data will be lost. Are you sure?")
+            .setIcon(android.R.drawable.ic_dialog_alert)
+            .setPositiveButton(android.R.string.yes, (dialog, whichButton) -> deleteAllData())
+            .setNegativeButton(android.R.string.no, null).show();
+    }
+
+    private void deleteAllData() {
+        deleteRecursive(binDir());
+        deleteRecursive(libDir());
+        File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
+        if (osImage.exists()) osImage.delete();
+
+        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        SharedPreferences.Editor editor = prefs.edit();
+        for (String key : prefs.getAll().keySet()) {
+            if (key.startsWith("version_")) {
+                editor.remove(key);
+            }
+        }
+        editor.apply();
+
+        Toast.makeText(this, "All data deleted.", Toast.LENGTH_SHORT).show();
+        checkFilesExistAndUpdateUi();
+    }
+
+    void deleteRecursive(File fileOrDirectory) {
+        if (fileOrDirectory.exists()) {
+            if (fileOrDirectory.isDirectory()) {
+                for (File child : fileOrDirectory.listFiles()) {
+                    deleteRecursive(child);
+                }
+            }
+            fileOrDirectory.delete();
+        }
+    }
+
+    private void checkFilesExistAndUpdateUi() {
+        File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
+        File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
+        boolean allExist = qemuBinary.exists() && osImage.exists();
+
+        startButton.setEnabled(allExist);
+        deleteAllButton.setEnabled(allExist);
+        downloadButton.setEnabled(true);
+        clearCacheButton.setEnabled(true);
+
+        if (allExist) {
+            updateStatus("Ready. You can check for updates or start VM.");
+        } else {
+            updateStatus("Please download required files.");
+        }
+    }
+
+    private File binDir() { return new File(getFilesDir(), BIN_DIR_NAME); }
+    private File libDir() { return new File(getFilesDir(), LIB_DIR_NAME); }
+
+    private void setAllButtonsEnabled(boolean enabled) {
+        downloadButton.setEnabled(enabled);
+        startButton.setEnabled(enabled);
+        clearCacheButton.setEnabled(enabled);
+        deleteAllButton.setEnabled(enabled);
+    }
 }
