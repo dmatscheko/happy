@@ -75,11 +75,11 @@ public class MainActivity extends AppCompatActivity {
         clearCacheButton.setOnClickListener(v -> clearCache());
         deleteAllButton.setOnClickListener(v -> confirmDeleteAllData());
 
-        checkFilesExist();
+        checkFilesExistAndUpdateUi();
     }
 
     private void downloadFiles() {
-        setButtonsEnabled(false);
+        setAllButtonsEnabled(false);
         new Thread(() -> {
             try {
                 updateStatus("Downloading package index...");
@@ -135,7 +135,7 @@ public class MainActivity extends AppCompatActivity {
                 updateStatus("Error during setup: " + e.getMessage());
                 Log.e(TAG, "Error in download/setup thread", e);
             } finally {
-                runOnUiThread(this::checkFilesExist);
+                runOnUiThread(this::checkFilesExistAndUpdateUi);
             }
         }).start();
     }
@@ -225,7 +225,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void startVm() {
-        setButtonsEnabled(false);
+        setAllButtonsEnabled(false);
         updateStatus("Starting VM...");
         new Thread(() -> {
             try {
@@ -270,7 +270,7 @@ public class MainActivity extends AppCompatActivity {
                 updateStatus("Error starting VM: " + e.getMessage());
                 Log.e(TAG, "Error in startVm thread", e);
             } finally {
-                runOnUiThread(this::checkFilesExist);
+                runOnUiThread(this::checkFilesExistAndUpdateUi);
             }
         }).start();
     }
@@ -348,7 +348,7 @@ public class MainActivity extends AppCompatActivity {
         editor.apply();
 
         Toast.makeText(this, "All data deleted.", Toast.LENGTH_SHORT).show();
-        checkFilesExist();
+        checkFilesExistAndUpdateUi();
     }
 
     void deleteRecursive(File fileOrDirectory) {
@@ -362,14 +362,15 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void checkFilesExist() {
+    private void checkFilesExistAndUpdateUi() {
         File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
         File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
         boolean allExist = qemuBinary.exists() && osImage.exists();
 
         startButton.setEnabled(allExist);
         deleteAllButton.setEnabled(allExist);
-        setButtonsEnabled(true);
+        downloadButton.setEnabled(true);
+        clearCacheButton.setEnabled(true);
 
         if (allExist) {
             updateStatus("Ready. You can check for updates or start VM.");
@@ -381,13 +382,9 @@ public class MainActivity extends AppCompatActivity {
     private File binDir() { return new File(getFilesDir(), BIN_DIR_NAME); }
     private File libDir() { return new File(getFilesDir(), LIB_DIR_NAME); }
 
-    private void setButtonsEnabled(boolean enabled) {
+    private void setAllButtonsEnabled(boolean enabled) {
         downloadButton.setEnabled(enabled);
-        if(enabled) {
-            checkFilesExist();
-        } else {
-            startButton.setEnabled(false);
-        }
+        startButton.setEnabled(enabled);
         clearCacheButton.setEnabled(enabled);
         deleteAllButton.setEnabled(enabled);
     }
