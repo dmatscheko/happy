@@ -62,15 +62,24 @@ task downloadAndUnpackQemu {
         println ">>> Finding QEMU package URL..."
         def qemuFilename = ""
         packagesUrl.withReader { reader ->
-            def foundPackage = false
+            def inTargetPackageBlock = false
             reader.eachLine { line ->
-                if (line.trim().isEmpty() && foundPackage) {
-                    return // break from eachLine
+                // If we found the filename, we can stop completely.
+                if (!qemuFilename.isEmpty()) {
+                    return
                 }
+
+                // Reset when we hit a blank line separating packages
+                if (line.trim().isEmpty()) {
+                    inTargetPackageBlock = false
+                    return // continue to next line
+                }
+
                 if (line == "Package: " + qemuPackageName) {
-                    foundPackage = true
+                    inTargetPackageBlock = true
                 }
-                if (foundPackage && line.startsWith("Filename: ")) {
+
+                if (inTargetPackageBlock && line.startsWith("Filename: ")) {
                     qemuFilename = line.substring("Filename: ".length())
                 }
             }
