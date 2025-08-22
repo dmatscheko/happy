@@ -1,0 +1,2 @@
+# This is a placeholder for the Home Assistant OS disk image.
+# In a real build, this would be the .qcow2.xz file downloaded from the Home Assistant releases page.

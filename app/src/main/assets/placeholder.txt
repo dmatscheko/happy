@@ -1,0 +1,1 @@
+This directory will hold the QEMU binary and the Home Assistant OS image.

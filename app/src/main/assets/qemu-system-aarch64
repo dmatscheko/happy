@@ -1,0 +1,2 @@
+# This is a placeholder for the QEMU binary.
+# In a real build, this file would be the cross-compiled qemu-system-aarch64 executable.
