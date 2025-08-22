@@ -145,6 +145,16 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void unpackDeb(File debFile) throws IOException {
+        File libDir = libDir();
+        File binDir = binDir();
+
+        // Ensure target directories exist and are, in fact, directories
+        if (libDir.exists() && !libDir.isDirectory()) libDir.delete();
+        if (!libDir.exists()) libDir.mkdirs();
+
+        if (binDir.exists() && !binDir.isDirectory()) binDir.delete();
+        if (!binDir.exists()) binDir.mkdirs();
+
         try (ArArchiveInputStream arInput = new ArArchiveInputStream(new BufferedInputStream(new FileInputStream(debFile)))) {
             org.apache.commons.compress.archivers.ArchiveEntry entry;
             while ((entry = arInput.getNextEntry()) != null) {
@@ -157,9 +167,9 @@ public class MainActivity extends AppCompatActivity {
                             String entryPath = tarEntry.getName();
                             File outputFile;
                             if (entryPath.contains("/lib/")) {
-                                outputFile = new File(libDir(), new File(entryPath).getName());
+                                outputFile = new File(libDir, new File(entryPath).getName());
                             } else if (entryPath.contains("/bin/")) {
-                                outputFile = new File(binDir(), new File(entryPath).getName());
+                                outputFile = new File(binDir, new File(entryPath).getName());
                             } else {
                                 continue;
                             }
