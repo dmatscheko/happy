@@ -1,3 +1,5 @@
+import org.apache.commons.compress.archivers.ar.ArArchiveInputStream
+
 plugins {
     id 'com.android.application'
 }
@@ -97,19 +99,22 @@ task downloadAndUnpackQemu {
             }
         }
 
-        println ">>> Unpacking QEMU..."
+        println ">>> Unpacking QEMU with Java..."
         unpackDir.mkdirs()
+        def dataFile = new File(unpackDir, "data.tar.xz")
 
-        println ">>> Listing archive contents..."
-        project.exec {
-            commandLine 'ar', 't', qemuDeb.absolutePath
-            workingDir unpackDir
-        }
-
-        println ">>> Attempting to extract archive..."
-        project.exec {
-            commandLine 'ar', 'x', qemuDeb.absolutePath
-            workingDir unpackDir
+        new ArArchiveInputStream(new FileInputStream(qemuDeb)).withCloseable { arInput ->
+            def entry = arInput.getNextEntry()
+            while (entry != null) {
+                if (entry.getName() == "data.tar.xz") {
+                    println ">>> Found data.tar.xz, extracting..."
+                    new FileOutputStream(dataFile).withCloseable { fileOut ->
+                        arInput.transferTo(fileOut)
+                    }
+                    break // Exit loop once found and extracted
+                }
+                entry = arInput.getNextEntry()
+            }
         }
 
         def dataFile = new File(unpackDir, "data.tar.xz")
