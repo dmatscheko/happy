@@ -387,7 +387,9 @@ public class PackageManager {
                                     tarInput.transferTo(out);
                                 }
                             } else if (mode == UnpackMode.SYMLINKS_ONLY && isSymlink) {
-                                if (outputFile.exists()) outputFile.delete();
+                                if (outputFile.exists()) {
+                                    deleteRecursive(outputFile);
+                                }
                                 outputFile.getParentFile().mkdirs();
                                 Os.symlink(tarEntry.getLinkName(), outputFile.getAbsolutePath());
                             }
@@ -426,6 +428,20 @@ public class PackageManager {
             connection.disconnect();
         }
         return db;
+    }
+
+    private void deleteRecursive(File fileOrDirectory) {
+        if (fileOrDirectory.isDirectory()) {
+            File[] children = fileOrDirectory.listFiles();
+            if (children != null) {
+                for (File child : children) {
+                    deleteRecursive(child);
+                }
+            }
+        }
+        if (!fileOrDirectory.delete()) {
+            Log.w(TAG, "Failed to delete " + fileOrDirectory);
+        }
     }
 
     private void downloadUrlToFile(String urlString, File file, String fileDescription) throws IOException {
