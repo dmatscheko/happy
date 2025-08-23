@@ -24,6 +24,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -54,66 +55,85 @@ public class PackageManager {
         this.statusListener = listener;
     }
 
+    /**
+     * The main method to resolve and install a list of packages.
+     * It uses an iterative approach to resolve all direct and indirect dependencies.
+     * @param initialPackages The list of packages to install.
+     */
     public void installPackages(List<String> initialPackages) {
         final StringBuilder warnings = new StringBuilder();
         try {
+            // 1. Download the package index
             statusListener.onStatusUpdate("Downloading package index...");
             Map<String, PackageInfo> packageDb = parsePackagesFile();
 
-            Set<String> packagesToInstall = new HashSet<>(initialPackages);
-            Set<String> processedPackages = new HashSet<>();
-            List<File> downloadedDebs = new ArrayList<>();
+            // 2. Initialize the set of selected packages with the initial list
             Map<String, PackageInfo> selectedPackages = new HashMap<>();
-
-            statusListener.onStatusUpdate("Resolving dependencies...");
-            while (!packagesToInstall.isEmpty()) {
-                String pkgName = packagesToInstall.iterator().next();
-                packagesToInstall.remove(pkgName);
-                if (processedPackages.contains(pkgName)) continue;
-
-                try {
-                    PackageInfo info = findBestPackage(packageDb, pkgName, "");
-                    if (info == null) throw new IOException("Package not found in index: " + pkgName);
-
-                    selectedPackages.put(info.packageName, info);
-
-                    if (info.depends != null && !info.depends.isEmpty()) {
-                        List<List<Dependency>> dependencyGroups = parseDepends(info.depends);
-                        for (List<Dependency> alternatives : dependencyGroups) {
-                            boolean foundAlternative = false;
-                            for (Dependency dep : alternatives) {
-                                if (selectedPackages.containsKey(dep.packageName)) {
-                                    // Already selected, check if version is compatible
-                                    PackageInfo selected = selectedPackages.get(dep.packageName);
-                                    if (dep.isVersionSatisfied(selected.version)) {
-                                        foundAlternative = true;
-                                        break;
-                                    }
-                                } else {
-                                    PackageInfo candidate = findBestPackage(packageDb, dep.packageName, dep.versionConstraint);
-                                    if (candidate != null && dep.isVersionSatisfied(candidate.version)) {
-                                        packagesToInstall.add(candidate.packageName);
-                                        foundAlternative = true;
-                                        break;
-                                    }
-                                }
-                            }
-                            if (!foundAlternative && !alternatives.isEmpty()) {
-                                warnings.append("Warning: Could not find any suitable package for dependency: ")
-                                        .append(alternatives.stream().map(d -> d.packageName).collect(Collectors.joining(" | ")))
-                                        .append("\n");
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    String warningMsg = "Warning: Failed to process package " + pkgName + ": " + e.getMessage();
-                    Log.w(TAG, warningMsg, e);
-                    warnings.append(warningMsg).append("\n");
-                } finally {
-                    processedPackages.add(pkgName);
+            for (String pkgName : initialPackages) {
+                PackageInfo info = findBestPackage(packageDb, pkgName, "");
+                if (info != null) {
+                    selectedPackages.put(pkgName, info);
+                } else {
+                    throw new IOException("Initial package not found: " + pkgName);
                 }
             }
 
+            // 3. Iteratively resolve dependencies
+            // The loop continues as long as we are adding new packages to the list.
+            // This ensures that we also resolve the dependencies of the dependencies.
+            statusListener.onStatusUpdate("Resolving dependencies...");
+            boolean changedInIteration;
+            do {
+                changedInIteration = false;
+                // Collect all dependencies from the currently selected packages
+                Set<Dependency> allDependencies = new HashSet<>();
+                for (PackageInfo pkg : selectedPackages.values()) {
+                    allDependencies.addAll(parseDepends(pkg.depends));
+                }
+
+                for (Dependency dep : allDependencies) {
+                    if (selectedPackages.containsKey(dep.packageName)) {
+                        // Package is already selected. We will check for version conflicts later.
+                        continue;
+                    }
+
+                    // Try to find a suitable package for this new dependency
+                    PackageInfo candidate = findBestPackage(packageDb, dep.packageName, dep.versionConstraint);
+                    if (candidate != null) {
+                        selectedPackages.put(candidate.packageName, candidate);
+                        changedInIteration = true;
+                    } else {
+                        // If the primary dependency is not found, check alternatives.
+                        boolean foundAlternative = false;
+                        for (Dependency alternative : dep.alternatives) {
+                             if (selectedPackages.containsKey(alternative.packageName)) {
+                                if (alternative.isVersionSatisfied(selectedPackages.get(alternative.packageName).version)) {
+                                    foundAlternative = true;
+                                    break;
+                                }
+                             }
+                             PackageInfo altCandidate = findBestPackage(packageDb, alternative.packageName, alternative.versionConstraint);
+                             if (altCandidate != null) {
+                                 selectedPackages.put(altCandidate.packageName, altCandidate);
+                                 changedInIteration = true;
+                                 foundAlternative = true;
+                                 break;
+                             }
+                        }
+                        if (!foundAlternative) {
+                             warnings.append("Warning: Could not resolve dependency: ").append(dep.packageName).append("\n");
+                        }
+                    }
+                }
+            } while (changedInIteration);
+
+            // 4. Conflict detection
+            // After the dependency set has stabilized, verify that there are no conflicts.
+            statusListener.onStatusUpdate("Verifying dependencies and checking for conflicts...");
+            verifyDependencies(selectedPackages, warnings);
+
+            // 5. Download and unpack all selected packages
+            List<File> downloadedDebs = new ArrayList<>();
             for (PackageInfo info : selectedPackages.values()) {
                 File debFile = new File(context.getCacheDir(), info.filename.replace('/', '_'));
                 downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, info.packageName);
@@ -126,6 +146,7 @@ public class PackageManager {
             statusListener.onStatusUpdate("Creating symbolic links...");
             for (File deb : downloadedDebs) unpackDeb(deb, UnpackMode.SYMLINKS_ONLY);
 
+            // 6. Clean up downloaded .deb files
             for (File deb : downloadedDebs) deb.delete();
 
             String finalMessage = "Package setup complete!";
@@ -139,11 +160,46 @@ public class PackageManager {
         }
     }
 
+    private void verifyDependencies(Map<String, PackageInfo> selectedPackages, StringBuilder warnings) {
+        for (PackageInfo pkg : selectedPackages.values()) {
+            Collection<Dependency> dependencies = parseDepends(pkg.depends);
+            for (Dependency dep : dependencies) {
+                boolean satisfied = false;
+                if (selectedPackages.containsKey(dep.packageName)) {
+                    if (dep.isVersionSatisfied(selectedPackages.get(dep.packageName).version)) {
+                        satisfied = true;
+                    }
+                }
+                for (Dependency alternative : dep.alternatives) {
+                    if (selectedPackages.containsKey(alternative.packageName)) {
+                        if (alternative.isVersionSatisfied(selectedPackages.get(alternative.packageName).version)) {
+                            satisfied = true;
+                            break;
+                        }
+                    }
+                }
+                if (!satisfied) {
+                    warnings.append("Conflict detected: Package '")
+                           .append(pkg.packageName)
+                           .append("' depends on '")
+                           .append(dep.packageName)
+                           .append(dep.versionConstraint)
+                           .append("', which could not be satisfied by the selected package set.\n");
+                }
+            }
+        }
+    }
+
     private PackageInfo findBestPackage(Map<String, PackageInfo> packageDb, String packageName, String versionConstraint) {
-        // This is a simplification. A real resolver would consider more factors.
-        // For now, we just find any package that matches the name.
-        // The version check will happen with isVersionSatisfied.
-        return packageDb.get(packageName);
+        // This is a simplification. A real resolver would consider more factors like choosing the newest version.
+        // For this repository, there's only one version per package, so we find the first one
+        // that matches the name and satisfies the version constraint.
+        Dependency tempDep = new Dependency(packageName, versionConstraint);
+        return packageDb.values().stream()
+                .filter(p -> p.packageName.equals(packageName))
+                .filter(p -> tempDep.isVersionSatisfied(p.version))
+                .findFirst()
+                .orElse(null);
     }
 
 
@@ -159,6 +215,7 @@ public class PackageManager {
     public static class Dependency {
         String packageName;
         String versionConstraint;
+        List<Dependency> alternatives = new ArrayList<>();
 
         public Dependency(String packageName, String versionConstraint) {
             this.packageName = packageName;
@@ -189,9 +246,9 @@ public class PackageManager {
         }
     }
 
-    public static List<List<Dependency>> parseDepends(String dependsString) {
-        List<List<Dependency>> dependencyGroups = new ArrayList<>();
-        if (dependsString == null || dependsString.isEmpty()) return dependencyGroups;
+    public static Collection<Dependency> parseDepends(String dependsString) {
+        Map<String, Dependency> dependencies = new HashMap<>();
+        if (dependsString == null || dependsString.isEmpty()) return dependencies.values();
 
         for (String group : dependsString.split(",\\s*")) {
             List<Dependency> alternatives = new ArrayList<>();
@@ -206,10 +263,12 @@ public class PackageManager {
                 }
             }
             if (!alternatives.isEmpty()) {
-                dependencyGroups.add(alternatives);
+                Dependency primary = alternatives.get(0);
+                primary.alternatives = alternatives.subList(1, alternatives.size());
+                dependencies.put(primary.packageName, primary);
             }
         }
-        return dependencyGroups;
+        return dependencies.values();
     }
 
     public static int compareVersions(String v1, String v2) {
