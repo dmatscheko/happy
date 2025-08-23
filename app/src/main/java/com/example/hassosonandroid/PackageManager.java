@@ -391,7 +391,11 @@ public class PackageManager {
                                     FileUtils.deleteRecursive(outputFile);
                                 }
                                 outputFile.getParentFile().mkdirs();
-                                Os.symlink(tarEntry.getLinkName(), outputFile.getAbsolutePath());
+                                try {
+                                    Os.symlink(tarEntry.getLinkName(), outputFile.getAbsolutePath());
+                                } catch (android.system.ErrnoException e) {
+                                    Log.w(TAG, "Failed to create symlink " + outputFile.getAbsolutePath() + " -> " + tarEntry.getLinkName() + ". Error: " + e.getMessage());
+                                }
                             }
                         }
                     }
