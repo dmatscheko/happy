@@ -8,6 +8,7 @@ import android.system.Os;
 import android.util.Log;
 import android.widget.Button;
 import android.widget.TextView;
+import android.widget.CheckBox;
 import android.widget.Toast;
 
 import androidx.annotation.RequiresApi;
@@ -47,6 +48,7 @@ public class MainActivity extends AppCompatActivity {
     private CheckBox runAsRootCheckBox;
     private SharedPreferences prefs;
     private Process qemuProcess;
+    private boolean isRunningAsRoot = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -124,24 +126,27 @@ public class MainActivity extends AppCompatActivity {
         setAllButtonsEnabled(false);
         updateStatus("Starting VM...");
         new Thread(() -> {
+            isRunningAsRoot = runAsRootCheckBox.isChecked();
             try {
                 File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
                 File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
                 if (!qemuBinary.exists() || !osImage.exists()) throw new IOException("Required files not found.");
 
-                String command = "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
+                File pidFile = new File(getFilesDir(), "qemu.pid");
+                if(pidFile.exists()) pidFile.delete();
+
+                String command = "chmod -R 755 " + binDir().getAbsolutePath() + " && " +
+                                 "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
                                  "export LD_LIBRARY_PATH=" + libDir().getAbsolutePath() + " && " +
                                  qemuBinary.getAbsolutePath() +
                                  " -m 2048 -M virt -cpu cortex-a57 -smp 2" +
                                  " -hda " + osImage.getAbsolutePath() +
                                  " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
-                                 " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0";
+                                 " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0 -display none" +
+                                 " -pidfile " + pidFile.getAbsolutePath();
 
-                if (runAsRootCheckBox.isChecked()) {
-                    command += " -accel kvm";
-                }
-
-                if (runAsRootCheckBox.isChecked()) {
+                if (isRunningAsRoot) {
+                    // command += " -accel kvm";
                     qemuProcess = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
                 } else {
                     qemuProcess = Runtime.getRuntime().exec(new String[]{"sh", "-c", command});
@@ -188,14 +193,35 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void terminateVm() {
-        if (qemuProcess != null) {
-            qemuProcess.destroy();
-            qemuProcess = null;
-            updateStatus("VM terminated.");
-            Toast.makeText(this, "VM terminated.", Toast.LENGTH_SHORT).show();
-            checkFilesExistAndUpdateUi();
-            terminateButton.setEnabled(false);
-        }
+        new Thread(() -> {
+            File pidFile = new File(getFilesDir(), "qemu.pid");
+            if (pidFile.exists()) {
+                try {
+                    String pid = new String(Files.readAllBytes(pidFile.toPath())).trim();
+                    if (!pid.isEmpty()) {
+                        String command = "kill -9 " + pid;
+                        if (isRunningAsRoot) {
+                            Runtime.getRuntime().exec(new String[]{"su", "-c", command}).waitFor();
+                        } else {
+                            Runtime.getRuntime().exec(new String[]{"sh", "-c", command}).waitFor();
+                        }
+                    }
+                } catch (Exception e) {
+                    Log.e(TAG, "Error killing process with pid from pidfile", e);
+                    // Fallback to destroying the process handle if reading pid file fails
+                    if (qemuProcess != null) {
+                        qemuProcess.destroy();
+                    }
+                } finally {
+                    pidFile.delete();
+                }
+            } else {
+                // Fallback if pidfile doesn't exist for some reason
+                if (qemuProcess != null) {
+                    qemuProcess.destroy();
+                }
+            }
+        }).start();
     }
 
     private void decompressXz(File source, File dest) throws IOException {
@@ -259,8 +285,7 @@ public class MainActivity extends AppCompatActivity {
     private void deleteAllData() {
         // Stop the VM if it is running
         if (qemuProcess != null) {
-            qemuProcess.destroy();
-            qemuProcess = null;
+            terminateVm();
         }
 
         // Delete specific files and directories, excluding the cache.

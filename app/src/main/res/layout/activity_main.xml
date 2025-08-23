@@ -34,7 +34,7 @@
         android:enabled="false"
         android:text="Start VM"
         app:layout_constraintEnd_toEndOf="parent"
-        app/layout_constraintStart_toStartOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/download_button" />
 
     <Button
@@ -53,9 +53,10 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
+        android:checked="true"
         android:text="Run as root (requires rooted device)"
         app:layout_constraintEnd_toEndOf="parent"
-        app/layout_constraintStart_toStartOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/terminate_button" />
 
     <Button
