@@ -47,7 +47,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String AAVMF_CODE_FILE = "AAVMF_CODE.no-secboot.fd";
     private static final String AAVMF_VARS_TEMPLATE_FILE = "AAVMF_VARS.fd";
     private static final String AAVMF_VARS_FILE = "AAVMF_VARS.writable.fd";
-    private static final String UEFI_DEB_URL = "http://http.us.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_2025.02-8_all.deb";
+    private static final String UEFI_DEB_URL = "https://http.us.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_2025.02-8_all.deb";
 
     private TextView statusTextView;
     private Button downloadButton, startButton, clearCacheButton, deleteAllButton, terminateButton;
@@ -137,7 +137,7 @@ public class MainActivity extends AppCompatActivity {
                 File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
                 if (!osImage.exists()) {
                     File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
-                    downloadUrlToFile(HAOS_URL, osImageXz, "Home Assistant OS");
+                    FileUtils.downloadUrlToFile(HAOS_URL, osImageXz, false, message -> updateStatus(message));
                     decompressXz(osImageXz, osImage);
                     osImageXz.delete();
                 }
@@ -286,32 +286,6 @@ public class MainActivity extends AppCompatActivity {
             byte[] buffer = new byte[8192];
             int read;
             while ((read = in.read(buffer)) != -1) out.write(buffer, 0, read);
-        }
-    }
-
-    private void downloadUrlToFile(String urlString, File file, String fileDescription) throws IOException {
-        URL url = new URL(urlString);
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        try {
-            connection.connect();
-            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
-                throw new IOException("Server returned HTTP " + connection.getResponseCode() + " " + connection.getResponseMessage());
-            }
-            int fileLength = connection.getContentLength();
-            try (InputStream input = connection.getInputStream(); OutputStream output = new FileOutputStream(file)) {
-                byte[] data = new byte[4096];
-                long total = 0;
-                int count;
-                while ((count = input.read(data)) != -1) {
-                    total += count;
-                    output.write(data, 0, count);
-                    if (fileLength > 0) {
-                        updateStatus("Downloading " + fileDescription + ": " + (int) (total * 100 / fileLength) + "%");
-                    }
-                }
-            }
-        } finally {
-            connection.disconnect();
         }
     }
 

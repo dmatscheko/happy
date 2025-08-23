@@ -65,7 +65,11 @@ public class PackageManager {
             statusListener.onStatusUpdate("Downloading firmware from " + url);
             String fileName = url.substring(url.lastIndexOf('/') + 1);
             File debFile = new File(context.getCacheDir(), fileName);
-            downloadUrlToFile(url, debFile, "Firmware");
+            try {
+                FileUtils.downloadUrlToFile(url, debFile, true, message -> statusListener.onStatusUpdate(message));
+            } catch (java.security.GeneralSecurityException e) {
+                throw new IOException("TLS error downloading firmware", e);
+            }
 
             statusListener.onStatusUpdate("Unpacking firmware...");
             unpackDeb(debFile, filesToExtract);
@@ -154,7 +158,11 @@ public class PackageManager {
             List<File> downloadedDebs = new ArrayList<>();
             for (PackageInfo info : selectedPackages.values()) {
                 File debFile = new File(context.getCacheDir(), info.filename.replace('/', '_'));
-                downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, info.packageName);
+                try {
+                    FileUtils.downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, false, message -> statusListener.onStatusUpdate(message));
+                } catch (java.security.GeneralSecurityException e) {
+                    throw new IOException("TLS error downloading package " + info.packageName, e);
+                }
                 downloadedDebs.add(debFile);
             }
 
@@ -432,32 +440,6 @@ public class PackageManager {
             connection.disconnect();
         }
         return db;
-    }
-
-    private void downloadUrlToFile(String urlString, File file, String fileDescription) throws IOException {
-        URL url = new URL(urlString);
-        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-        try {
-            connection.connect();
-            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) {
-                throw new IOException("Server returned HTTP " + connection.getResponseCode() + " " + connection.getResponseMessage());
-            }
-            int fileLength = connection.getContentLength();
-            try (InputStream input = connection.getInputStream(); OutputStream output = new FileOutputStream(file)) {
-                byte[] data = new byte[4096];
-                long total = 0;
-                int count;
-                while ((count = input.read(data)) != -1) {
-                    total += count;
-                    output.write(data, 0, count);
-                    if (fileLength > 0) {
-                        statusListener.onStatusUpdate("Downloading " + fileDescription + ": " + (int) (total * 100 / fileLength) + "%");
-                    }
-                }
-            }
-        } finally {
-            connection.disconnect();
-        }
     }
 
     private File binDir() { return new File(context.getFilesDir(), BIN_DIR_NAME); }
