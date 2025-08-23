@@ -299,12 +299,7 @@ public class PackageManager {
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     private void unpackDeb(File debFile, UnpackMode mode) throws Exception {
-        File libDir = libDir();
-        File binDir = binDir();
-        if (libDir.exists() && !libDir.isDirectory()) libDir.delete();
-        if (!libDir.exists()) libDir.mkdirs();
-        if (binDir.exists() && !binDir.isDirectory()) binDir.delete();
-        if (!binDir.exists()) binDir.mkdirs();
+        final String termuxPrefix = "./data/data/com.termux/files/usr/";
 
         try (ArArchiveInputStream arInput = new ArArchiveInputStream(new BufferedInputStream(new FileInputStream(debFile)))) {
             org.apache.commons.compress.archivers.ArchiveEntry entry;
@@ -315,25 +310,36 @@ public class PackageManager {
                         TarArchiveEntry tarEntry;
                         while ((tarEntry = tarInput.getNextTarEntry()) != null) {
                             String entryPath = tarEntry.getName();
-                            File outputFile;
-                            if (entryPath.contains("/lib/")) outputFile = new File(libDir, new File(entryPath).getName());
-                            else if (entryPath.contains("/bin/")) outputFile = new File(binDir, new File(entryPath).getName());
-                            else continue;
+                            if (!entryPath.startsWith(termuxPrefix)) continue;
+
+                            String relativePath = entryPath.substring(termuxPrefix.length());
+                            if (relativePath.isEmpty()) continue;
+
+                            File outputFile = new File(context.getFilesDir(), relativePath);
+
+                            if (tarEntry.isDirectory()) {
+                                if (mode == UnpackMode.FILES_ONLY) {
+                                    outputFile.mkdirs();
+                                }
+                                continue;
+                            }
 
                             boolean isSymlink = tarEntry.isSymbolicLink();
 
-                            if(mode == UnpackMode.FILES_ONLY && !isSymlink) {
+                            if (mode == UnpackMode.FILES_ONLY && !isSymlink) {
+                                outputFile.getParentFile().mkdirs();
                                 if (outputFile.exists()) outputFile.delete();
                                 try (OutputStream out = new FileOutputStream(outputFile)) {
                                     tarInput.transferTo(out);
                                 }
                             } else if (mode == UnpackMode.SYMLINKS_ONLY && isSymlink) {
                                 if (outputFile.exists()) outputFile.delete();
+                                outputFile.getParentFile().mkdirs();
                                 Os.symlink(tarEntry.getLinkName(), outputFile.getAbsolutePath());
                             }
                         }
                     }
-                    return;
+                    return; // We've processed the data.tar.xz, no need to check other entries.
                 }
             }
         }
