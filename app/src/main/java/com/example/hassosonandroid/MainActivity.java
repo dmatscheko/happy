@@ -197,8 +197,18 @@ public class MainActivity extends AppCompatActivity {
             File pidFile = new File(getFilesDir(), "qemu.pid");
             if (pidFile.exists()) {
                 try {
-                    String pid = new String(Files.readAllBytes(pidFile.toPath())).trim();
-                    if (!pid.isEmpty()) {
+                    String pid;
+                    if (isRunningAsRoot) {
+                        Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", "cat " + pidFile.getAbsolutePath()});
+                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                            pid = reader.readLine();
+                        }
+                        p.waitFor();
+                    } else {
+                        pid = new String(Files.readAllBytes(pidFile.toPath())).trim();
+                    }
+
+                    if (pid != null && !pid.isEmpty()) {
                         String command = "kill -9 " + pid;
                         if (isRunningAsRoot) {
                             Runtime.getRuntime().exec(new String[]{"su", "-c", command}).waitFor();
