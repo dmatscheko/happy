@@ -345,12 +345,12 @@ public class MainActivity extends AppCompatActivity {
         }
 
         // Delete specific files and directories, excluding the cache.
-        deleteRecursive(new File(getFilesDir(), OS_IMAGE_NAME));
-        deleteRecursive(new File(getFilesDir(), AAVMF_CODE_FILE));
-        deleteRecursive(new File(getFilesDir(), AAVMF_VARS_TEMPLATE_FILE));
-        deleteRecursive(new File(getFilesDir(), AAVMF_VARS_FILE));
-        deleteRecursive(binDir());
-        deleteRecursive(libDir());
+        FileUtils.deleteRecursive(new File(getFilesDir(), OS_IMAGE_NAME));
+        FileUtils.deleteRecursive(new File(getFilesDir(), AAVMF_CODE_FILE));
+        FileUtils.deleteRecursive(new File(getFilesDir(), AAVMF_VARS_TEMPLATE_FILE));
+        FileUtils.deleteRecursive(new File(getFilesDir(), AAVMF_VARS_FILE));
+        FileUtils.deleteRecursive(binDir());
+        FileUtils.deleteRecursive(libDir());
 
         // Clear related preferences
         SharedPreferences.Editor editor = prefs.edit();
@@ -363,28 +363,6 @@ public class MainActivity extends AppCompatActivity {
 
         Toast.makeText(this, "All data except cache has been deleted.", Toast.LENGTH_SHORT).show();
         checkFilesExistAndUpdateUi();
-    }
-
-    @RequiresApi(api = Build.VERSION_CODES.O)
-    void deleteRecursive(File fileOrDirectory) {
-        Path path = fileOrDirectory.toPath();
-        // Use NOFOLLOW_LINKS to check the link itself, not the target
-        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
-            return;
-        }
-
-        try {
-            if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
-                try (DirectoryStream<Path> stream = Files.newDirectoryStream(path)) {
-                    for (Path entry : stream) {
-                        deleteRecursive(entry.toFile());
-                    }
-                }
-            }
-            Files.delete(path);
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to delete " + path, e);
-        }
     }
 
     private boolean isDirectoryNotEmpty(File directory) {
