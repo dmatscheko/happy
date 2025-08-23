@@ -221,10 +221,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void deleteAllData() {
-        deleteRecursive(binDir());
-        deleteRecursive(libDir());
-        File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
-        if (osImage.exists()) osImage.delete();
+        File filesDir = getFilesDir();
+        if (filesDir.exists() && filesDir.isDirectory()) {
+            for (File file : filesDir.listFiles()) {
+                if (!file.getName().equals("profileInstalled")) {
+                    deleteRecursive(file);
+                }
+            }
+        }
 
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
         SharedPreferences.Editor editor = prefs.edit();
@@ -264,7 +268,16 @@ public class MainActivity extends AppCompatActivity {
         File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
 
         boolean startable = qemuBinary.exists() && osImage.exists();
-        boolean dataExists = isDirectoryNotEmpty(binDir()) || isDirectoryNotEmpty(libDir()) || osImage.exists();
+
+        // Data exists if there's more than just the 'profileInstalled' file.
+        File[] files = getFilesDir().listFiles();
+        boolean dataExists = (files != null && files.length > 1) || (files != null && files.length == 1 && !files[0].getName().equals("profileInstalled"));
+        if (!dataExists) {
+            // Also check subdirectories, as the root might only have bin/lib which could be empty.
+            dataExists = isDirectoryNotEmpty(binDir()) || isDirectoryNotEmpty(libDir()) || osImage.exists();
+        }
+
+
         boolean cacheExists = isDirectoryNotEmpty(getCacheDir()) || osImageXz.exists();
 
         startButton.setEnabled(startable);
