@@ -131,7 +131,7 @@ public class MainActivity extends AppCompatActivity {
                                  " -m 2048 -M virt -cpu cortex-a57 -smp 2" +
                                  " -hda " + osImage.getAbsolutePath() +
                                  " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
-                                 " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0";
+                                 " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0"; // -accel kvm  (if on rooted phone) // -serial vc -display none -nographic
 
                 Process suProcess = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
 
