@@ -31,7 +31,9 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashSet;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -42,6 +44,10 @@ public class MainActivity extends AppCompatActivity {
     private static final String BIN_DIR_NAME = "bin";
 
     private static final String HAOS_URL = "https://github.com/home-assistant/operating-system/releases/download/12.3/haos_generic-aarch64-12.3.qcow2.xz";
+    private static final String AAVMF_CODE_FILE = "AAVMF_CODE.no-secboot.fd";
+    private static final String AAVMF_VARS_TEMPLATE_FILE = "AAVMF_VARS.fd";
+    private static final String AAVMF_VARS_FILE = "AAVMF_VARS.writable.fd";
+    private static final String UEFI_DEB_URL = "http://http.us.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_2025.02-8_all.deb";
 
     private TextView statusTextView;
     private Button downloadButton, startButton, clearCacheButton, deleteAllButton, terminateButton;
@@ -85,8 +91,8 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onFinalMessage(String message) {
                     updateStatus(message);
-                    // Now that packages are set up, download the OS image
-                    downloadOsImage();
+                    // Now that packages are set up, download the firmware and OS image
+                    downloadFirmware();
                 }
 
                 @Override
@@ -99,6 +105,29 @@ public class MainActivity extends AppCompatActivity {
 
             PackageManager packageManager = new PackageManager(getApplicationContext(), listener);
             packageManager.installPackages(Collections.singletonList("qemu-system-aarch64-headless"));
+        }).start();
+    }
+
+    private void downloadFirmware() {
+        new Thread(() -> {
+            PackageManager.StatusListener listener = new PackageManager.StatusListener() {
+                @Override public void onStatusUpdate(String message) { updateStatus(message); }
+                @Override public void onError(String message, Throwable e) {
+                    updateStatus(message + ": " + e.getMessage());
+                    Log.e(TAG, message, e);
+                    runOnUiThread(MainActivity.this::checkFilesExistAndUpdateUi);
+                }
+                @Override public void onFinalMessage(String message) {
+                    updateStatus(message);
+                    // After firmware, download the OS image
+                    downloadOsImage();
+                }
+            };
+            PackageManager packageManager = new PackageManager(getApplicationContext(), listener);
+            packageManager.installDebFromUrl(UEFI_DEB_URL, new HashSet<>(Arrays.asList(
+                    "usr/share/AAVMF/AAVMF_CODE.no-secboot.fd",
+                    "usr/share/AAVMF/AAVMF_VARS.fd"
+            )));
         }).start();
     }
 
@@ -130,20 +159,37 @@ public class MainActivity extends AppCompatActivity {
             try {
                 File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
                 File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
-                if (!qemuBinary.exists() || !osImage.exists()) throw new IOException("Required files not found.");
+                File aavmfCodeFd = new File(getFilesDir(), AAVMF_CODE_FILE);
+                File aavmfVarsTemplate = new File(getFilesDir(), AAVMF_VARS_TEMPLATE_FILE);
+                File aavmfVarsFd = new File(getFilesDir(), AAVMF_VARS_FILE);
+
+                if (!qemuBinary.exists() || !osImage.exists() || !aavmfCodeFd.exists() || !aavmfVarsTemplate.exists()) {
+                    throw new IOException("Required files not found for starting VM.");
+                }
+
+                // Prepare the writable AAVMF_VARS.fd by copying it from the template
+                if (aavmfVarsFd.exists()) aavmfVarsFd.delete();
+                try (InputStream in = new FileInputStream(aavmfVarsTemplate);
+                     OutputStream out = new FileOutputStream(aavmfVarsFd)) {
+                    in.transferTo(out);
+                }
 
                 File pidFile = new File(getFilesDir(), "qemu.pid");
                 if(pidFile.exists()) pidFile.delete();
 
                 String command = "chmod -R 755 " + binDir().getAbsolutePath() + " && " +
-                                 "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
-                                 "export LD_LIBRARY_PATH=" + libDir().getAbsolutePath() + " && " +
-                                 qemuBinary.getAbsolutePath() +
-                                 " -m 2048 -M virt -cpu cortex-a57 -smp 2" +
-                                 " -hda " + osImage.getAbsolutePath() +
-                                 " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
-                                 " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0 -display none" +
-                                 " -pidfile " + pidFile.getAbsolutePath();
+                        "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
+                        "export LD_LIBRARY_PATH=" + libDir().getAbsolutePath() + " && " +
+                        qemuBinary.getAbsolutePath() +
+                        " -m 2048 -M virt -cpu cortex-a57 -smp 2" +
+                        " -drive file=" + osImage.getAbsolutePath() + ",format=qcow2,if=none,id=hd0" +
+                        " -device virtio-blk-device,drive=hd0" +
+                        " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
+                        " -device virtio-net-pci,netdev=net0" +
+                        " -drive if=pflash,format=raw,readonly=on,file=" + aavmfCodeFd.getAbsolutePath() +
+                        " -drive if=pflash,format=raw,file=" + aavmfVarsFd.getAbsolutePath() +
+                        " -vnc 0.0.0.0:0 -display none -serial vc" +
+                        " -pidfile " + pidFile.getAbsolutePath();
 
                 if (isRunningAsRoot) {
                     // command += " -accel kvm";
@@ -300,6 +346,9 @@ public class MainActivity extends AppCompatActivity {
 
         // Delete specific files and directories, excluding the cache.
         deleteRecursive(new File(getFilesDir(), OS_IMAGE_NAME));
+        deleteRecursive(new File(getFilesDir(), AAVMF_CODE_FILE));
+        deleteRecursive(new File(getFilesDir(), AAVMF_VARS_TEMPLATE_FILE));
+        deleteRecursive(new File(getFilesDir(), AAVMF_VARS_FILE));
         deleteRecursive(binDir());
         deleteRecursive(libDir());
 
@@ -350,8 +399,10 @@ public class MainActivity extends AppCompatActivity {
         File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
         File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
         File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
+        File aavmfCodeFd = new File(getFilesDir(), AAVMF_CODE_FILE);
+        File aavmfVarsTemplate = new File(getFilesDir(), AAVMF_VARS_TEMPLATE_FILE);
 
-        boolean startable = qemuBinary.exists() && osImage.exists();
+        boolean startable = qemuBinary.exists() && osImage.exists() && aavmfCodeFd.exists() && aavmfVarsTemplate.exists();
         boolean isRunning = qemuProcess != null;
 
         // Data exists if there's more than just the 'profileInstalled' file.

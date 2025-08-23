@@ -60,6 +60,24 @@ public class PackageManager {
      * It uses an iterative approach to resolve all direct and indirect dependencies.
      * @param initialPackages The list of packages to install.
      */
+    public void installDebFromUrl(String url, Set<String> filesToExtract) {
+        try {
+            statusListener.onStatusUpdate("Downloading firmware from " + url);
+            String fileName = url.substring(url.lastIndexOf('/') + 1);
+            File debFile = new File(context.getCacheDir(), fileName);
+            downloadUrlToFile(url, debFile, "Firmware");
+
+            statusListener.onStatusUpdate("Unpacking firmware...");
+            unpackDeb(debFile, filesToExtract);
+
+            debFile.delete();
+            statusListener.onStatusUpdate("Firmware setup complete.");
+
+        } catch (Exception e) {
+            statusListener.onError("Error during firmware installation", e);
+        }
+    }
+
     public void installPackages(List<String> initialPackages) {
         final StringBuilder warnings = new StringBuilder();
         try {
@@ -296,6 +314,42 @@ public class PackageManager {
         return 0;
     }
 
+
+    private void unpackDeb(File debFile, Set<String> filesToExtract) throws Exception {
+        Set<String> extractedFiles = new HashSet<>();
+        try (ArArchiveInputStream arInput = new ArArchiveInputStream(new BufferedInputStream(new FileInputStream(debFile)))) {
+            org.apache.commons.compress.archivers.ArchiveEntry entry;
+            while ((entry = arInput.getNextEntry()) != null) {
+                if (entry.getName().equals("data.tar.xz")) {
+                    XZInputStream xzInput = new XZInputStream(arInput);
+                    try (TarArchiveInputStream tarInput = new TarArchiveInputStream(xzInput)) {
+                        TarArchiveEntry tarEntry;
+                        while ((tarEntry = tarInput.getNextTarEntry()) != null) {
+                            String entryPath = tarEntry.getName();
+                            // Paths in tar are like ./usr/share/AAVMF/AAVMF_CODE.no-secboot.fd
+                            String cleanedPath = entryPath.startsWith("./") ? entryPath.substring(2) : entryPath;
+
+                            if (filesToExtract.contains(cleanedPath)) {
+                                File outputFile = new File(context.getFilesDir(), new File(cleanedPath).getName());
+                                if (outputFile.exists()) outputFile.delete();
+                                outputFile.getParentFile().mkdirs();
+
+                                try (OutputStream out = new FileOutputStream(outputFile)) {
+                                    tarInput.transferTo(out);
+                                }
+                                extractedFiles.add(cleanedPath);
+                                // If all files are extracted, we can stop.
+                                if (extractedFiles.size() == filesToExtract.size()) {
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                    return;
+                }
+            }
+        }
+    }
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     private void unpackDeb(File debFile, UnpackMode mode) throws Exception {
