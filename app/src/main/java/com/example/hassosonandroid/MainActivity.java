@@ -43,8 +43,10 @@ public class MainActivity extends AppCompatActivity {
     private static final String HAOS_URL = "https://github.com/home-assistant/operating-system/releases/download/12.3/haos_generic-aarch64-12.3.qcow2.xz";
 
     private TextView statusTextView;
-    private Button downloadButton, startButton, clearCacheButton, deleteAllButton;
+    private Button downloadButton, startButton, clearCacheButton, deleteAllButton, terminateButton;
+    private CheckBox runAsRootCheckBox;
     private SharedPreferences prefs;
+    private Process qemuProcess;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -56,12 +58,15 @@ public class MainActivity extends AppCompatActivity {
         startButton = findViewById(R.id.start_button);
         clearCacheButton = findViewById(R.id.clear_cache_button);
         deleteAllButton = findViewById(R.id.delete_all_button);
+        terminateButton = findViewById(R.id.terminate_button);
+        runAsRootCheckBox = findViewById(R.id.run_as_root_checkbox);
         prefs = PreferenceManager.getDefaultSharedPreferences(this);
 
         downloadButton.setOnClickListener(v -> downloadFiles());
         startButton.setOnClickListener(v -> startVm());
         clearCacheButton.setOnClickListener(v -> clearCache());
         deleteAllButton.setOnClickListener(v -> confirmDeleteAllData());
+        terminateButton.setOnClickListener(v -> terminateVm());
 
         checkFilesExistAndUpdateUi();
     }
@@ -124,26 +129,38 @@ public class MainActivity extends AppCompatActivity {
                 File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
                 if (!qemuBinary.exists() || !osImage.exists()) throw new IOException("Required files not found.");
 
-                String command = "chmod -R 755 " + binDir().getAbsolutePath() + " && " +
-                                 "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
+                String command = "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
                                  "export LD_LIBRARY_PATH=" + libDir().getAbsolutePath() + " && " +
                                  qemuBinary.getAbsolutePath() +
                                  " -m 2048 -M virt -cpu cortex-a57 -smp 2" +
                                  " -hda " + osImage.getAbsolutePath() +
                                  " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
-                                 " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0"; // -accel kvm  (if on rooted phone) // -serial vc -display none -nographic
+                                 " -device virtio-net-pci,netdev=net0 -vnc 0.0.0.0:0";
 
-                Process suProcess = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
+                if (runAsRootCheckBox.isChecked()) {
+                    command += " -accel kvm";
+                }
+
+                if (runAsRootCheckBox.isChecked()) {
+                    qemuProcess = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
+                } else {
+                    qemuProcess = Runtime.getRuntime().exec(new String[]{"sh", "-c", command});
+                }
+
+                runOnUiThread(() -> {
+                    startButton.setEnabled(false);
+                    terminateButton.setEnabled(true);
+                });
 
                 new Thread(() -> {
-                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(suProcess.getInputStream()))) {
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(qemuProcess.getInputStream()))) {
                         String line; while ((line = reader.readLine()) != null) Log.d(TAG, "QEMU stdout: " + line);
                     } catch (IOException e) { Log.e(TAG, "Error reading QEMU stdout", e); }
                 }).start();
 
                 final StringBuilder errorOutput = new StringBuilder();
                 new Thread(() -> {
-                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(suProcess.getErrorStream()))) {
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(qemuProcess.getErrorStream()))) {
                         String line; while ((line = reader.readLine()) != null) {
                             Log.e(TAG, "QEMU stderr: " + line);
                             errorOutput.append(line).append("\n");
@@ -151,7 +168,7 @@ public class MainActivity extends AppCompatActivity {
                     } catch (IOException e) { Log.e(TAG, "Error reading QEMU stderr", e); }
                 }).start();
 
-                int exitValue = suProcess.waitFor();
+                int exitValue = qemuProcess.waitFor();
                 if (exitValue != 0) {
                     updateStatus("VM process exited with error code " + exitValue + ".\n" + "Error: " + errorOutput.toString());
                 } else {
@@ -161,9 +178,24 @@ public class MainActivity extends AppCompatActivity {
                 updateStatus("Error starting VM: " + e.getMessage());
                 Log.e(TAG, "Error in startVm thread", e);
             } finally {
-                runOnUiThread(this::checkFilesExistAndUpdateUi);
+                qemuProcess = null;
+                runOnUiThread(() -> {
+                    checkFilesExistAndUpdateUi();
+                    terminateButton.setEnabled(false);
+                });
             }
         }).start();
+    }
+
+    private void terminateVm() {
+        if (qemuProcess != null) {
+            qemuProcess.destroy();
+            qemuProcess = null;
+            updateStatus("VM terminated.");
+            Toast.makeText(this, "VM terminated.", Toast.LENGTH_SHORT).show();
+            checkFilesExistAndUpdateUi();
+            terminateButton.setEnabled(false);
+        }
     }
 
     private void decompressXz(File source, File dest) throws IOException {
@@ -225,25 +257,27 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void deleteAllData() {
-        File filesDir = getFilesDir();
-        if (filesDir.exists() && filesDir.isDirectory()) {
-            for (File file : filesDir.listFiles()) {
-                if (!file.getName().equals("profileInstalled")) {
-                    deleteRecursive(file);
-                }
-            }
+        // Stop the VM if it is running
+        if (qemuProcess != null) {
+            qemuProcess.destroy();
+            qemuProcess = null;
         }
 
-        SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(this);
+        // Delete specific files and directories, excluding the cache.
+        deleteRecursive(new File(getFilesDir(), OS_IMAGE_NAME));
+        deleteRecursive(binDir());
+        deleteRecursive(libDir());
+
+        // Clear related preferences
         SharedPreferences.Editor editor = prefs.edit();
         for (String key : prefs.getAll().keySet()) {
-            if (key.startsWith("version_")) {
+            if (key.startsWith("version_")) { // Assuming package versions are stored with this prefix
                 editor.remove(key);
             }
         }
         editor.apply();
 
-        Toast.makeText(this, "All data deleted.", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "All data except cache has been deleted.", Toast.LENGTH_SHORT).show();
         checkFilesExistAndUpdateUi();
     }
 
@@ -283,6 +317,7 @@ public class MainActivity extends AppCompatActivity {
         File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
 
         boolean startable = qemuBinary.exists() && osImage.exists();
+        boolean isRunning = qemuProcess != null;
 
         // Data exists if there's more than just the 'profileInstalled' file.
         File[] files = getFilesDir().listFiles();
@@ -292,15 +327,19 @@ public class MainActivity extends AppCompatActivity {
             dataExists = isDirectoryNotEmpty(binDir()) || isDirectoryNotEmpty(libDir()) || osImage.exists();
         }
 
-
         boolean cacheExists = isDirectoryNotEmpty(getCacheDir()) || osImageXz.exists();
 
-        startButton.setEnabled(startable);
+        startButton.setEnabled(startable && !isRunning);
+        terminateButton.setEnabled(isRunning);
         deleteAllButton.setEnabled(dataExists);
         clearCacheButton.setEnabled(cacheExists);
-        downloadButton.setEnabled(true); // Always enabled
+        downloadButton.setEnabled(!isRunning);
+        runAsRootCheckBox.setEnabled(!isRunning);
 
-        if (startable) {
+
+        if (isRunning) {
+            updateStatus("VM is running.");
+        } else if (startable) {
             updateStatus("Ready. You can check for updates or start VM.");
         } else {
             updateStatus("Please download required files.");
@@ -315,5 +354,7 @@ public class MainActivity extends AppCompatActivity {
         startButton.setEnabled(enabled);
         clearCacheButton.setEnabled(enabled);
         deleteAllButton.setEnabled(enabled);
+        terminateButton.setEnabled(enabled);
+        runAsRootCheckBox.setEnabled(enabled);
     }
 }
