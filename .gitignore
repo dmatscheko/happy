@@ -2,6 +2,12 @@
 .gradle/
 build/
 
+# Gradle Wrapper
+gradlew
+gradlew.bat
+gradle/wrapper/gradle-wrapper.jar
+gradle/wrapper/gradle-wrapper.properties
+
 # Local configuration file (sdk path, etc)
 local.properties
 
@@ -32,3 +38,6 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# Apple
+.DS_Store
