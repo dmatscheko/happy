@@ -26,6 +26,10 @@ import java.io.OutputStream;
 import java.io.BufferedReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
+import java.nio.file.LinkOption;
+import java.nio.file.Path;
 import java.util.Collections;
 
 public class MainActivity extends AppCompatActivity {
@@ -243,14 +247,25 @@ public class MainActivity extends AppCompatActivity {
         checkFilesExistAndUpdateUi();
     }
 
+    @RequiresApi(api = Build.VERSION_CODES.O)
     void deleteRecursive(File fileOrDirectory) {
-        if (fileOrDirectory.exists()) {
-            if (fileOrDirectory.isDirectory()) {
-                for (File child : fileOrDirectory.listFiles()) {
-                    deleteRecursive(child);
+        Path path = fileOrDirectory.toPath();
+        // Use NOFOLLOW_LINKS to check the link itself, not the target
+        if (!Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+            return;
+        }
+
+        try {
+            if (Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS)) {
+                try (DirectoryStream<Path> stream = Files.newDirectoryStream(path)) {
+                    for (Path entry : stream) {
+                        deleteRecursive(entry.toFile());
+                    }
                 }
             }
-            fileOrDirectory.delete();
+            Files.delete(path);
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to delete " + path, e);
         }
     }
 
