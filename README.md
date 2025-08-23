@@ -1,8 +1,12 @@
 # HassOS on Android
 
+
+**🚨 This is an experiment and does NOT work at the moment. 🚨**
+
+
 This project is an Android application designed to run Home Assistant OS in a virtual machine on an Android device. It uses [QEMU](https://www.qemu.org/) to virtualize the operating system.
 
-**🚨 IMPORTANT: This application requires a rooted Android device to function. 🚨**
+**IMPORTANT: This application requires a rooted Android device to function.**
 
 It needs root access to execute the QEMU binary from the app's private data directory, bypassing standard Android security restrictions.
 
