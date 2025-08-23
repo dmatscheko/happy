@@ -250,17 +250,29 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private boolean isDirectoryNotEmpty(File directory) {
+        if (directory != null && directory.exists() && directory.isDirectory()) {
+            String[] files = directory.list();
+            return files != null && files.length > 0;
+        }
+        return false;
+    }
+
     private void checkFilesExistAndUpdateUi() {
         File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
         File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
-        boolean allExist = qemuBinary.exists() && osImage.exists();
+        File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
 
-        startButton.setEnabled(allExist);
-        deleteAllButton.setEnabled(allExist);
-        downloadButton.setEnabled(true);
-        clearCacheButton.setEnabled(true);
+        boolean startable = qemuBinary.exists() && osImage.exists();
+        boolean dataExists = isDirectoryNotEmpty(binDir()) || isDirectoryNotEmpty(libDir()) || osImage.exists();
+        boolean cacheExists = isDirectoryNotEmpty(getCacheDir()) || osImageXz.exists();
 
-        if (allExist) {
+        startButton.setEnabled(startable);
+        deleteAllButton.setEnabled(dataExists);
+        clearCacheButton.setEnabled(cacheExists);
+        downloadButton.setEnabled(true); // Always enabled
+
+        if (startable) {
             updateStatus("Ready. You can check for updates or start VM.");
         } else {
             updateStatus("Please download required files.");
