@@ -120,44 +120,6 @@ public class MainActivity extends AppCompatActivity {
         throw new RuntimeException("Asset not found: " + targetAssetName);
     }
 
-    public static String getLatestQemuEfiDownloadUrl() throws Exception {
-        String packagesUrl = "https://deb.debian.org/debian/dists/sid/main/binary-all/Packages.gz";
-        URL url = new URL(packagesUrl);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("GET");
-
-        if (conn.getResponseCode() != 200) {
-            throw new RuntimeException("Failed : HTTP error code : " + conn.getResponseCode());
-        }
-
-        BufferedReader br = new BufferedReader(new InputStreamReader(new GZIPInputStream(conn.getInputStream())));
-        String line;
-        String currentPackage = null;
-        String version = null;
-        String filename = null;
-
-        while ((line = br.readLine()) != null) {
-            if (line.startsWith("Package: ")) {
-                currentPackage = line.substring("Package: ".length()).trim();
-            } else if (line.startsWith("Version: ")) {
-                version = line.substring("Version: ".length()).trim();
-            } else if (line.startsWith("Filename: ")) {
-                filename = line.substring("Filename: ".length()).trim();
-            } else if (line.isEmpty() && "qemu-efi-aarch64".equals(currentPackage)) {
-                // Found the matching package stanza; construct URL
-                if (filename != null) {
-                    br.close();
-                    conn.disconnect();
-                    return "https://deb.debian.org/debian/" + filename;
-                }
-            }
-        }
-
-        br.close();
-        conn.disconnect();
-        throw new RuntimeException("Package not found: qemu-efi-aarch64");
-    }
-
     private void downloadFiles() {
         setAllButtonsEnabled(false);
         new Thread(() -> {
@@ -170,8 +132,8 @@ public class MainActivity extends AppCompatActivity {
                 @Override
                 public void onFinalMessage(String message) {
                     updateStatus(message);
-                    // Now that packages are set up, download the firmware and OS image
-                    downloadFirmware();
+                    // Now that packages and firmware are set up, download the OS image
+                    downloadOsImage();
                 }
 
                 @Override
@@ -183,34 +145,7 @@ public class MainActivity extends AppCompatActivity {
             };
 
             PackageManager packageManager = new PackageManager(fileUtils, listener);
-            packageManager.installPackages(Collections.singletonList("qemu-system-aarch64-headless"));
-        }).start();
-    }
-
-    private void downloadFirmware() {
-        new Thread(() -> {
-            PackageManager.StatusListener listener = new PackageManager.StatusListener() {
-                @Override public void onStatusUpdate(String message) { updateStatus("Firmware: " + message); }
-                @Override public void onError(String message, Throwable e) {
-                    updateStatus("Firmware: " + message + ": " + e.getMessage());
-                    Log.e(TAG, "Firmware: " + message, e);
-                    runOnUiThread(MainActivity.this::checkFilesExistAndUpdateUi);
-                }
-                @Override public void onFinalMessage(String message) {
-                    updateStatus("Firmware: " + message);
-                    // After firmware, download the OS image
-                    downloadOsImage();
-                }
-            };
-            PackageManager packageManager = new PackageManager(fileUtils, listener);
-            try {
-                packageManager.installDebFromUrl(getLatestQemuEfiDownloadUrl(), new HashSet<>(Arrays.asList(
-                        "usr/share/AAVMF/AAVMF_CODE.no-secboot.fd",
-                        "usr/share/AAVMF/AAVMF_VARS.fd"
-                )));
-            } catch (Exception e) {
-                updateStatus("Firmware: Error getting package URL: " + e.getMessage());
-            }
+            packageManager.installPackages(Arrays.asList("qemu-system-aarch64-headless", "qemu-efi-aarch64"));
         }).start();
     }
 
@@ -240,14 +175,14 @@ public class MainActivity extends AppCompatActivity {
         updateStatus("Starting VM...");
         new Thread(() -> {
             try {
-                File qemuBinary = new File(fileUtils.binDir(), QEMU_BINARY_NAME);
+                File qemuBinary = new File(fileUtils.filesDir(), "usr/bin/" + QEMU_BINARY_NAME);
                 File osImage = new File(fileUtils.filesDir(), OS_IMAGE_NAME);
-                File aavmfCodeFd = new File(fileUtils.filesDir(), AAVMF_CODE_FILE);
-                File aavmfVarsTemplate = new File(fileUtils.filesDir(), AAVMF_VARS_TEMPLATE_FILE);
+                File aavmfCodeFd = new File(fileUtils.filesDir(), "usr/share/AAVMF/" + AAVMF_CODE_FILE);
+                File aavmfVarsTemplate = new File(fileUtils.filesDir(), "usr/share/AAVMF/" + AAVMF_VARS_TEMPLATE_FILE);
                 File aavmfVarsFd = new File(fileUtils.filesDir(), AAVMF_VARS_FILE);
 
                 if (!qemuBinary.exists() || !osImage.exists() || !aavmfCodeFd.exists() || !aavmfVarsTemplate.exists()) {
-                    throw new IOException("Required files not found for starting VM.");
+                    throw new IOException("Required files not found for starting VM. Make sure QEMU and firmware are installed.");
                 }
 
                 // Prepare the writable AAVMF_VARS.fd by copying it from the template
@@ -260,9 +195,10 @@ public class MainActivity extends AppCompatActivity {
                 File pidFile = new File(fileUtils.filesDir(), "qemu.pid");
                 if(pidFile.exists()) pidFile.delete();
 
-                String command = "chmod -R 755 " + fileUtils.binDir().getAbsolutePath() + " && " +
-                        "export PATH=" + fileUtils.binDir().getAbsolutePath() + ":$PATH && " +
-                        "export LD_LIBRARY_PATH=" + fileUtils.libDir().getAbsolutePath() + " && " +
+                String filesDir = fileUtils.filesDir().getAbsolutePath();
+                String command = "chmod -R 755 " + new File(filesDir, "usr/bin").getAbsolutePath() + " && " +
+                        "export PATH=" + new File(filesDir, "usr/bin").getAbsolutePath() + ":$PATH && " +
+                        "export LD_LIBRARY_PATH=" + new File(filesDir, "usr/lib").getAbsolutePath() + " && " +
                         qemuBinary.getAbsolutePath() +
                         " -m 8192 -M virt,highmem=on -cpu cortex-a72 -smp 8" +
                         " -drive file=" + osImage.getAbsolutePath() + ",format=qcow2,if=none,id=hd0" +
@@ -402,10 +338,10 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void checkFilesExistAndUpdateUi() {
-        File qemuBinary = new File(fileUtils.binDir(), QEMU_BINARY_NAME);
+        File qemuBinary = new File(fileUtils.filesDir(), "usr/bin/" + QEMU_BINARY_NAME);
         File osImage = new File(fileUtils.filesDir(), OS_IMAGE_NAME);
-        File aavmfCodeFd = new File(fileUtils.filesDir(), AAVMF_CODE_FILE);
-        File aavmfVarsTemplate = new File(fileUtils.filesDir(), AAVMF_VARS_TEMPLATE_FILE);
+        File aavmfCodeFd = new File(fileUtils.filesDir(), "usr/share/AAVMF/" + AAVMF_CODE_FILE);
+        File aavmfVarsTemplate = new File(fileUtils.filesDir(), "usr/share/AAVMF/" + AAVMF_VARS_TEMPLATE_FILE);
 
         boolean cacheExists = isDirectoryNotEmpty(fileUtils.cacheDir());
         boolean dataExists = isDirectoryNotEmpty(fileUtils.filesDir());

@@ -35,8 +35,8 @@ import java.util.stream.Collectors;
 
 public class PackageManager {
     private static final String TAG = "HassOSPackageManager";
-    private static final String TERMUX_REPO_URL = "https://packages.termux.dev/apt/termux-main/";
-    private static final String TERMUX_PACKAGES_FILE_URL = TERMUX_REPO_URL + "dists/stable/main/binary-aarch64/Packages";
+    private static final String DEBIAN_REPO_URL = "https://ftp.debian.org/debian/";
+    private static final String DEBIAN_PACKAGES_FILE_URL = DEBIAN_REPO_URL + "dists/stable/main/binary-arm64/Packages.xz";
 
     private final FileUtils fileUtils;
     private final StatusListener statusListener;
@@ -155,7 +155,7 @@ public class PackageManager {
             for (PackageInfo info : selectedPackages.values()) {
                 File debFile = new File(fileUtils.cacheDir(), info.filename.replace('/', '_'));
                 try {
-                    FileUtils.downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, false, message -> statusListener.onStatusUpdate(message));
+                    FileUtils.downloadUrlToFile(DEBIAN_REPO_URL + info.filename, debFile, false, message -> statusListener.onStatusUpdate(message));
                 } catch (java.security.GeneralSecurityException e) {
                     throw new IOException("TLS error downloading package " + info.packageName, e);
                 }
@@ -189,6 +189,17 @@ public class PackageManager {
                         satisfied = true;
                     }
                 }
+                if (!satisfied) {
+                    // Check if any other selected package provides this dependency
+                    for (PackageInfo p : selectedPackages.values()) {
+                        if (p.provides != null && p.provides.contains(dep.packageName)) {
+                            // TODO: Add version check for provides if necessary
+                            satisfied = true;
+                            break;
+                        }
+                    }
+                }
+
                 for (Dependency alternative : dep.alternatives) {
                     if (selectedPackages.containsKey(alternative.packageName)) {
                         if (alternative.isVersionSatisfied(selectedPackages.get(alternative.packageName).version)) {
@@ -199,24 +210,34 @@ public class PackageManager {
                 }
                 if (!satisfied) {
                     warnings.append("Conflict detected: Package '")
-                           .append(pkg.packageName)
-                           .append("' depends on '")
-                           .append(dep.packageName)
-                           .append(dep.versionConstraint)
-                           .append("', which could not be satisfied by the selected package set.\n");
+                            .append(pkg.packageName)
+                            .append("' depends on '")
+                            .append(dep.packageName)
+                            .append(dep.versionConstraint)
+                            .append("', which could not be satisfied by the selected package set.\n");
                 }
             }
         }
     }
 
     private PackageInfo findBestPackage(Map<String, PackageInfo> packageDb, String packageName, String versionConstraint) {
-        // This is a simplification. A real resolver would consider more factors like choosing the newest version.
-        // For this repository, there's only one version per package, so we find the first one
-        // that matches the name and satisfies the version constraint.
         Dependency tempDep = new Dependency(packageName, versionConstraint);
-        return packageDb.values().stream()
+
+        // First, try to find a direct match for the package name
+        PackageInfo directMatch = packageDb.values().stream()
                 .filter(p -> p.packageName.equals(packageName))
                 .filter(p -> tempDep.isVersionSatisfied(p.version))
+                .findFirst()
+                .orElse(null);
+
+        if (directMatch != null) {
+            return directMatch;
+        }
+
+        // If no direct match, look for a package that "Provides" the requested package
+        return packageDb.values().stream()
+                .filter(p -> p.provides.contains(packageName))
+                .filter(p -> tempDep.isVersionSatisfied(p.version)) // This might need more sophisticated logic for provides
                 .findFirst()
                 .orElse(null);
     }
@@ -229,6 +250,7 @@ public class PackageManager {
         String version;
         String filename;
         String depends;
+        List<String> provides = new ArrayList<>();
     }
 
     public static class Dependency {
@@ -354,7 +376,8 @@ public class PackageManager {
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     private void unpackDeb(File debFile, UnpackMode mode) throws Exception {
-        final String termuxPrefix = "./data/data/com.termux/files/usr/";
+        // Debian packages have paths relative to the root, e.g. ./usr/bin/qemu
+        final String debianPrefix = "./";
 
         try (ArArchiveInputStream arInput = new ArArchiveInputStream(new BufferedInputStream(new FileInputStream(debFile)))) {
             org.apache.commons.compress.archivers.ArchiveEntry entry;
@@ -365,9 +388,9 @@ public class PackageManager {
                         TarArchiveEntry tarEntry;
                         while ((tarEntry = tarInput.getNextEntry()) != null) {
                             String entryPath = tarEntry.getName();
-                            if (!entryPath.startsWith(termuxPrefix)) continue;
+                            if (!entryPath.startsWith(debianPrefix)) continue;
 
-                            String relativePath = entryPath.substring(termuxPrefix.length());
+                            String relativePath = entryPath.substring(debianPrefix.length());
                             if (relativePath.isEmpty()) continue;
 
                             File outputFile = new File(fileUtils.filesDir(), relativePath);
@@ -408,12 +431,14 @@ public class PackageManager {
 
     private Map<String, PackageInfo> parsePackagesFile() throws IOException {
         Map<String, PackageInfo> db = new HashMap<>();
-        URL url = new URL(TERMUX_PACKAGES_FILE_URL);
+        URL url = new URL(DEBIAN_PACKAGES_FILE_URL);
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         try {
             connection.connect();
-            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) throw new IOException("Failed to get Termux Packages file");
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()))) {
+            if (connection.getResponseCode() != HttpURLConnection.HTTP_OK) throw new IOException("Failed to get Debian Packages file");
+
+            try (InputStream xzStream = new XZInputStream(connection.getInputStream());
+                 BufferedReader reader = new BufferedReader(new InputStreamReader(xzStream))) {
                 String line;
                 PackageInfo currentInfo = null;
                 while ((line = reader.readLine()) != null) {
@@ -425,6 +450,13 @@ public class PackageManager {
                         if (line.startsWith("Filename: ")) currentInfo.filename = line.substring(10);
                         else if (line.startsWith("Version: ")) currentInfo.version = line.substring(9);
                         else if (line.startsWith("Depends: ")) currentInfo.depends = line.substring(9);
+                        else if (line.startsWith("Provides: ")) {
+                            String providesStr = line.substring(10);
+                            for (String p : providesStr.split(",\\s*")) {
+                                // Provides can have versions, e.g., "virtual-package (>= 1.0)". We strip them for now.
+                                currentInfo.provides.add(p.split("\\s+")[0]);
+                            }
+                        }
                     }
                 }
                 if (currentInfo != null) db.put(currentInfo.packageName, currentInfo);
