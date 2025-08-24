@@ -192,21 +192,24 @@ public class MainActivity extends AppCompatActivity {
 
                 File pidFile = new File(fileUtils.filesDir(), "qemu.pid");
                 if(pidFile.exists()) pidFile.delete();
+                osImage.setWritable(true);
 
                         // "chmod -R 755 " + fileUtils.binDir().getAbsolutePath() + " && " +
                 String command = "chmod -R a+rx " + fileUtils.filesDir().getAbsolutePath() + " && " +
                         "export PATH=" + fileUtils.binDir().getAbsolutePath() + ":$PATH && " +
-                        "export LD_LIBRARY_PATH=" + fileUtils.libDir().getAbsolutePath() + " && " +
+                        fileUtils.libDir().getAbsolutePath() + "/aarch64-linux-gnu/ld-linux-aarch64.so.1 --library-path " + fileUtils.libDir().getAbsolutePath() + "/aarch64-linux-gnu " +
+                        // "export LD_LIBRARY_PATH=" + fileUtils.libDir().getAbsolutePath() + ":" + fileUtils.libDir().getAbsolutePath() + "/aarch64-linux-gnu && " +
                         qemuBinary.getAbsolutePath() +
                         " -m 8192 -M virt,highmem=on -cpu cortex-a72 -smp 8" +
                         " -drive file=" + osImage.getAbsolutePath() + ",format=qcow2,if=none,id=hd0" +
                         " -device virtio-blk-device,drive=hd0" +
                         " -netdev user,id=net0,hostfwd=tcp::8123-:8123,dns=1.1.1.1" +
-                        " -device virtio-net-pci,netdev=net0" +
+                        " -device virtio-net-pci,netdev=net0,romfile=\"\"" +
                         " -drive if=pflash,format=raw,readonly=on,file=" + aavmfCodeFd.getAbsolutePath() +
                         " -drive if=pflash,format=raw,file=" + aavmfVarsFd.getAbsolutePath() +
                         " -vnc 0.0.0.0:0 -display none -serial vc" +
-                        " -pidfile " + pidFile.getAbsolutePath();
+                        " -pidfile " + pidFile.getAbsolutePath() +
+                        " -L " + fileUtils.filesDir() + "/usr/share/qemu";
 
                 // command += " -accel kvm";
                 qemuProcess = run(command);
@@ -326,10 +329,16 @@ public class MainActivity extends AppCompatActivity {
         checkFilesExistAndUpdateUi();
     }
 
-
+    
     private boolean isVMRunning() {
         File pidFile = new File(fileUtils.filesDir(), "qemu.pid");
-        return pidFile.exists();
+        try {
+            Process p = run("test -f " + pidFile.getAbsolutePath());
+            return p.waitFor() == 0;
+        } catch (Exception e) {
+            Log.e(TAG, "Error checking PID file", e);
+            return false;
+        }
     }
 
 
