@@ -1,17 +1,14 @@
 package com.example.hassosonandroid;
 
 import android.content.SharedPreferences;
-import android.os.Build;
 import android.os.Bundle;
 import android.preference.PreferenceManager;
-import android.system.Os;
 import android.util.Log;
 import android.widget.Button;
 import android.widget.TextView;
 import android.widget.CheckBox;
 import android.widget.Toast;
 
-import androidx.annotation.RequiresApi;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
@@ -25,41 +22,42 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.BufferedReader;
-import java.net.HttpURLConnection;
-import java.net.URL;
-import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
-import java.nio.file.LinkOption;
-import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.util.zip.GZIPInputStream;
+
+
 
 public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "HassOS";
     private static final String QEMU_BINARY_NAME = "qemu-system-aarch64";
     private static final String OS_IMAGE_NAME = "haos.qcow2";
-    private static final String LIB_DIR_NAME = "lib";
-    private static final String BIN_DIR_NAME = "bin";
 
-    private static final String HAOS_URL = "https://github.com/home-assistant/operating-system/releases/download/12.3/haos_generic-aarch64-12.3.qcow2.xz";
+    // private static final String HAOS_URL = "https://github.com/home-assistant/operating-system/releases/download/16.1/haos_generic-aarch64-16.1.qcow2.xz";
     private static final String AAVMF_CODE_FILE = "AAVMF_CODE.no-secboot.fd";
     private static final String AAVMF_VARS_TEMPLATE_FILE = "AAVMF_VARS.fd";
     private static final String AAVMF_VARS_FILE = "AAVMF_VARS.writable.fd";
-    private static final String UEFI_DEB_URL = "https://http.us.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_2025.02-8_all.deb";
+    // private static final String UEFI_DEB_URL = "https://http.us.debian.org/debian/pool/main/e/edk2/qemu-efi-aarch64_2025.02-8_all.deb";
 
     private TextView statusTextView;
     private Button downloadButton, startButton, clearCacheButton, deleteAllButton, terminateButton;
     private CheckBox runAsRootCheckBox;
-    private SharedPreferences prefs;
     private Process qemuProcess;
-    private boolean isRunningAsRoot = false;
+    private FileUtils fileUtils;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+
+        fileUtils = new FileUtils(getApplicationContext());
 
         statusTextView = findViewById(R.id.textView);
         downloadButton = findViewById(R.id.download_button);
@@ -68,7 +66,6 @@ public class MainActivity extends AppCompatActivity {
         deleteAllButton = findViewById(R.id.delete_all_button);
         terminateButton = findViewById(R.id.terminate_button);
         runAsRootCheckBox = findViewById(R.id.run_as_root_checkbox);
-        prefs = PreferenceManager.getDefaultSharedPreferences(this);
 
         downloadButton.setOnClickListener(v -> downloadFiles());
         startButton.setOnClickListener(v -> startVm());
@@ -77,6 +74,88 @@ public class MainActivity extends AppCompatActivity {
         terminateButton.setOnClickListener(v -> terminateVm());
 
         checkFilesExistAndUpdateUi();
+    }
+
+    private Process run(String command) throws Exception{
+        boolean isRunningAsRoot = runAsRootCheckBox.isChecked();
+        if (isRunningAsRoot) {
+            return Runtime.getRuntime().exec(new String[]{"su", "-c", command});
+        } else {
+            return Runtime.getRuntime().exec(new String[]{"sh", "-c", command});
+        }
+    }
+
+    public String getLatestHaosDownloadUrl() throws Exception {
+        String apiUrl = "https://api.github.com/repos/home-assistant/operating-system/releases/latest";
+        URL url = new URL(apiUrl);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+        conn.setRequestProperty("Accept", "application/vnd.github.v3+json");
+
+        if (conn.getResponseCode() != 200) {
+            throw new RuntimeException("Failed : HTTP error code : " + conn.getResponseCode());
+        }
+
+        BufferedReader br = new BufferedReader(new InputStreamReader((conn.getInputStream())));
+        StringBuilder response = new StringBuilder();
+        String output;
+        while ((output = br.readLine()) != null) {
+            response.append(output);
+        }
+        conn.disconnect();
+
+        JSONObject json = new JSONObject(response.toString());
+        String tagName = json.getString("tag_name");
+        JSONArray assets = json.getJSONArray("assets");
+
+        String targetAssetName = "haos_generic-aarch64-" + tagName + ".qcow2.xz";
+        for (int i = 0; i < assets.length(); i++) {
+            JSONObject asset = assets.getJSONObject(i);
+            String name = asset.getString("name");
+            if (name.equals(targetAssetName)) {
+                return asset.getString("browser_download_url");
+            }
+        }
+
+        throw new RuntimeException("Asset not found: " + targetAssetName);
+    }
+
+    public static String getLatestQemuEfiDownloadUrl() throws Exception {
+        String packagesUrl = "https://deb.debian.org/debian/dists/sid/main/binary-all/Packages.gz";
+        URL url = new URL(packagesUrl);
+        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+        conn.setRequestMethod("GET");
+
+        if (conn.getResponseCode() != 200) {
+            throw new RuntimeException("Failed : HTTP error code : " + conn.getResponseCode());
+        }
+
+        BufferedReader br = new BufferedReader(new InputStreamReader(new GZIPInputStream(conn.getInputStream())));
+        String line;
+        String currentPackage = null;
+        String version = null;
+        String filename = null;
+
+        while ((line = br.readLine()) != null) {
+            if (line.startsWith("Package: ")) {
+                currentPackage = line.substring("Package: ".length()).trim();
+            } else if (line.startsWith("Version: ")) {
+                version = line.substring("Version: ".length()).trim();
+            } else if (line.startsWith("Filename: ")) {
+                filename = line.substring("Filename: ".length()).trim();
+            } else if (line.isEmpty() && "qemu-efi-aarch64".equals(currentPackage)) {
+                // Found the matching package stanza; construct URL
+                if (filename != null) {
+                    br.close();
+                    conn.disconnect();
+                    return "https://deb.debian.org/debian/" + filename;
+                }
+            }
+        }
+
+        br.close();
+        conn.disconnect();
+        throw new RuntimeException("Package not found: qemu-efi-aarch64");
     }
 
     private void downloadFiles() {
@@ -103,7 +182,7 @@ public class MainActivity extends AppCompatActivity {
                 }
             };
 
-            PackageManager packageManager = new PackageManager(getApplicationContext(), listener);
+            PackageManager packageManager = new PackageManager(fileUtils, listener);
             packageManager.installPackages(Collections.singletonList("qemu-system-aarch64-headless"));
         }).start();
     }
@@ -111,36 +190,41 @@ public class MainActivity extends AppCompatActivity {
     private void downloadFirmware() {
         new Thread(() -> {
             PackageManager.StatusListener listener = new PackageManager.StatusListener() {
-                @Override public void onStatusUpdate(String message) { updateStatus(message); }
+                @Override public void onStatusUpdate(String message) { updateStatus("Firmware: " + message); }
                 @Override public void onError(String message, Throwable e) {
-                    updateStatus(message + ": " + e.getMessage());
-                    Log.e(TAG, message, e);
+                    updateStatus("Firmware: " + message + ": " + e.getMessage());
+                    Log.e(TAG, "Firmware: " + message, e);
                     runOnUiThread(MainActivity.this::checkFilesExistAndUpdateUi);
                 }
                 @Override public void onFinalMessage(String message) {
-                    updateStatus(message);
+                    updateStatus("Firmware: " + message);
                     // After firmware, download the OS image
                     downloadOsImage();
                 }
             };
-            PackageManager packageManager = new PackageManager(getApplicationContext(), listener);
-            packageManager.installDebFromUrl(UEFI_DEB_URL, new HashSet<>(Arrays.asList(
-                    "usr/share/AAVMF/AAVMF_CODE.no-secboot.fd",
-                    "usr/share/AAVMF/AAVMF_VARS.fd"
-            )));
+            PackageManager packageManager = new PackageManager(fileUtils, listener);
+            try {
+                packageManager.installDebFromUrl(getLatestQemuEfiDownloadUrl(), new HashSet<>(Arrays.asList(
+                        "usr/share/AAVMF/AAVMF_CODE.no-secboot.fd",
+                        "usr/share/AAVMF/AAVMF_VARS.fd"
+                )));
+            } catch (Exception e) {
+                updateStatus("Firmware: Error getting package URL: " + e.getMessage());
+            }
         }).start();
     }
 
     private void downloadOsImage() {
         new Thread(() -> {
             try {
-                File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
-                if (!osImage.exists()) {
-                    File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
-                    FileUtils.downloadUrlToFile(HAOS_URL, osImageXz, false, message -> updateStatus(message));
-                    decompressXz(osImageXz, osImage);
-                    osImageXz.delete();
-                }
+                File osImage = new File(fileUtils.filesDir(), OS_IMAGE_NAME);
+                // if (!osImage.exists()) {
+                String url = getLatestHaosDownloadUrl();
+                String fileName = url.substring(url.lastIndexOf('/') + 1);
+                File osImageXz = new File(fileUtils.cacheDir(), fileName);
+                FileUtils.downloadUrlToFile(url, osImageXz, false, message -> updateStatus(message));
+                decompressXz(osImageXz, osImage);
+                // }
                 updateStatus("Setup complete! Ready to start VM.");
             } catch (Exception e) {
                 updateStatus("Error during OS image download: " + e.getMessage());
@@ -155,13 +239,12 @@ public class MainActivity extends AppCompatActivity {
         setAllButtonsEnabled(false);
         updateStatus("Starting VM...");
         new Thread(() -> {
-            isRunningAsRoot = runAsRootCheckBox.isChecked();
             try {
-                File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
-                File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
-                File aavmfCodeFd = new File(getFilesDir(), AAVMF_CODE_FILE);
-                File aavmfVarsTemplate = new File(getFilesDir(), AAVMF_VARS_TEMPLATE_FILE);
-                File aavmfVarsFd = new File(getFilesDir(), AAVMF_VARS_FILE);
+                File qemuBinary = new File(fileUtils.binDir(), QEMU_BINARY_NAME);
+                File osImage = new File(fileUtils.filesDir(), OS_IMAGE_NAME);
+                File aavmfCodeFd = new File(fileUtils.filesDir(), AAVMF_CODE_FILE);
+                File aavmfVarsTemplate = new File(fileUtils.filesDir(), AAVMF_VARS_TEMPLATE_FILE);
+                File aavmfVarsFd = new File(fileUtils.filesDir(), AAVMF_VARS_FILE);
 
                 if (!qemuBinary.exists() || !osImage.exists() || !aavmfCodeFd.exists() || !aavmfVarsTemplate.exists()) {
                     throw new IOException("Required files not found for starting VM.");
@@ -174,29 +257,25 @@ public class MainActivity extends AppCompatActivity {
                     in.transferTo(out);
                 }
 
-                File pidFile = new File(getFilesDir(), "qemu.pid");
+                File pidFile = new File(fileUtils.filesDir(), "qemu.pid");
                 if(pidFile.exists()) pidFile.delete();
 
-                String command = "chmod -R 755 " + binDir().getAbsolutePath() + " && " +
-                        "export PATH=" + binDir().getAbsolutePath() + ":$PATH && " +
-                        "export LD_LIBRARY_PATH=" + libDir().getAbsolutePath() + " && " +
+                String command = "chmod -R 755 " + fileUtils.binDir().getAbsolutePath() + " && " +
+                        "export PATH=" + fileUtils.binDir().getAbsolutePath() + ":$PATH && " +
+                        "export LD_LIBRARY_PATH=" + fileUtils.libDir().getAbsolutePath() + " && " +
                         qemuBinary.getAbsolutePath() +
-                        " -m 2048 -M virt -cpu cortex-a57 -smp 2" +
+                        " -m 8192 -M virt,highmem=on -cpu cortex-a72 -smp 8" +
                         " -drive file=" + osImage.getAbsolutePath() + ",format=qcow2,if=none,id=hd0" +
                         " -device virtio-blk-device,drive=hd0" +
-                        " -netdev user,id=net0,hostfwd=tcp::8123-:8123" +
+                        " -netdev user,id=net0,hostfwd=tcp::8123-:8123,dns=1.1.1.1,dnssearch=1.0.0.1" +
                         " -device virtio-net-pci,netdev=net0" +
                         " -drive if=pflash,format=raw,readonly=on,file=" + aavmfCodeFd.getAbsolutePath() +
                         " -drive if=pflash,format=raw,file=" + aavmfVarsFd.getAbsolutePath() +
                         " -vnc 0.0.0.0:0 -display none -serial vc" +
                         " -pidfile " + pidFile.getAbsolutePath();
 
-                if (isRunningAsRoot) {
-                    // command += " -accel kvm";
-                    qemuProcess = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
-                } else {
-                    qemuProcess = Runtime.getRuntime().exec(new String[]{"sh", "-c", command});
-                }
+                // command += " -accel kvm";
+                qemuProcess = run(command);
 
                 runOnUiThread(() -> {
                     startButton.setEnabled(false);
@@ -230,37 +309,26 @@ public class MainActivity extends AppCompatActivity {
                 Log.e(TAG, "Error in startVm thread", e);
             } finally {
                 qemuProcess = null;
-                runOnUiThread(() -> {
-                    checkFilesExistAndUpdateUi();
-                    terminateButton.setEnabled(false);
-                });
+                runOnUiThread(this::checkFilesExistAndUpdateUi);
             }
         }).start();
     }
 
     private void terminateVm() {
         new Thread(() -> {
-            File pidFile = new File(getFilesDir(), "qemu.pid");
+            File pidFile = new File(fileUtils.filesDir(), "qemu.pid");
             if (pidFile.exists()) {
                 try {
                     String pid;
-                    if (isRunningAsRoot) {
-                        Process p = Runtime.getRuntime().exec(new String[]{"su", "-c", "cat " + pidFile.getAbsolutePath()});
-                        try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
-                            pid = reader.readLine();
-                        }
-                        p.waitFor();
-                    } else {
-                        pid = new String(Files.readAllBytes(pidFile.toPath())).trim();
+                    Process p = run("cat " + pidFile.getAbsolutePath());
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(p.getInputStream()))) {
+                        pid = reader.readLine();
                     }
+                    p.waitFor();
 
                     if (pid != null && !pid.isEmpty()) {
                         String command = "kill -9 " + pid;
-                        if (isRunningAsRoot) {
-                            Runtime.getRuntime().exec(new String[]{"su", "-c", command}).waitFor();
-                        } else {
-                            Runtime.getRuntime().exec(new String[]{"sh", "-c", command}).waitFor();
-                        }
+                        run(command).waitFor();
                     }
                 } catch (Exception e) {
                     Log.e(TAG, "Error killing process with pid from pidfile", e);
@@ -277,6 +345,7 @@ public class MainActivity extends AppCompatActivity {
                     qemuProcess.destroy();
                 }
             }
+            runOnUiThread(this::checkFilesExistAndUpdateUi);
         }).start();
     }
 
@@ -294,12 +363,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void clearCache() {
-        File cacheDir = getCacheDir();
-        if (cacheDir.exists()) {
-            for(File file: cacheDir.listFiles()) file.delete();
-        }
-        File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
-        if(osImageXz.exists()) osImageXz.delete();
+        FileUtils.deleteRecursive(fileUtils.cacheDir());
         Toast.makeText(this, "Cache cleared.", Toast.LENGTH_SHORT).show();
     }
 
@@ -314,29 +378,19 @@ public class MainActivity extends AppCompatActivity {
 
     private void deleteAllData() {
         // Stop the VM if it is running
-        if (qemuProcess != null) {
+        if (isVMRunning()) {
             terminateVm();
         }
 
-        // Delete specific files and directories, excluding the cache.
-        FileUtils.deleteRecursive(new File(getFilesDir(), OS_IMAGE_NAME));
-        FileUtils.deleteRecursive(new File(getFilesDir(), AAVMF_CODE_FILE));
-        FileUtils.deleteRecursive(new File(getFilesDir(), AAVMF_VARS_TEMPLATE_FILE));
-        FileUtils.deleteRecursive(new File(getFilesDir(), AAVMF_VARS_FILE));
-        FileUtils.deleteRecursive(binDir());
-        FileUtils.deleteRecursive(libDir());
-
-        // Clear related preferences
-        SharedPreferences.Editor editor = prefs.edit();
-        for (String key : prefs.getAll().keySet()) {
-            if (key.startsWith("version_")) { // Assuming package versions are stored with this prefix
-                editor.remove(key);
-            }
-        }
-        editor.apply();
+        FileUtils.deleteRecursive(fileUtils.filesDir());
 
         Toast.makeText(this, "All data except cache has been deleted.", Toast.LENGTH_SHORT).show();
         checkFilesExistAndUpdateUi();
+    }
+
+    private boolean isVMRunning() {
+        File pidFile = new File(fileUtils.filesDir(), "qemu.pid");
+        return pidFile.exists();
     }
 
     private boolean isDirectoryNotEmpty(File directory) {
@@ -348,32 +402,23 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void checkFilesExistAndUpdateUi() {
-        File qemuBinary = new File(binDir(), QEMU_BINARY_NAME);
-        File osImage = new File(getFilesDir(), OS_IMAGE_NAME);
-        File osImageXz = new File(getFilesDir(), OS_IMAGE_NAME + ".xz");
-        File aavmfCodeFd = new File(getFilesDir(), AAVMF_CODE_FILE);
-        File aavmfVarsTemplate = new File(getFilesDir(), AAVMF_VARS_TEMPLATE_FILE);
+        File qemuBinary = new File(fileUtils.binDir(), QEMU_BINARY_NAME);
+        File osImage = new File(fileUtils.filesDir(), OS_IMAGE_NAME);
+        File aavmfCodeFd = new File(fileUtils.filesDir(), AAVMF_CODE_FILE);
+        File aavmfVarsTemplate = new File(fileUtils.filesDir(), AAVMF_VARS_TEMPLATE_FILE);
+
+        boolean cacheExists = isDirectoryNotEmpty(fileUtils.cacheDir());
+        boolean dataExists = isDirectoryNotEmpty(fileUtils.filesDir());
 
         boolean startable = qemuBinary.exists() && osImage.exists() && aavmfCodeFd.exists() && aavmfVarsTemplate.exists();
-        boolean isRunning = qemuProcess != null;
+        boolean isRunning = isVMRunning();
 
-        // Data exists if there's more than just the 'profileInstalled' file.
-        File[] files = getFilesDir().listFiles();
-        boolean dataExists = (files != null && files.length > 1) || (files != null && files.length == 1 && !files[0].getName().equals("profileInstalled"));
-        if (!dataExists) {
-            // Also check subdirectories, as the root might only have bin/lib which could be empty.
-            dataExists = isDirectoryNotEmpty(binDir()) || isDirectoryNotEmpty(libDir()) || osImage.exists();
-        }
-
-        boolean cacheExists = isDirectoryNotEmpty(getCacheDir()) || osImageXz.exists();
-
+        runAsRootCheckBox.setEnabled(!isRunning);
         startButton.setEnabled(startable && !isRunning);
         terminateButton.setEnabled(isRunning);
-        deleteAllButton.setEnabled(dataExists);
-        clearCacheButton.setEnabled(cacheExists);
         downloadButton.setEnabled(!isRunning);
-        runAsRootCheckBox.setEnabled(!isRunning);
-
+        clearCacheButton.setEnabled(cacheExists);
+        deleteAllButton.setEnabled(dataExists);
 
         if (isRunning) {
             updateStatus("VM is running.");
@@ -384,15 +429,12 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private File binDir() { return new File(getFilesDir(), BIN_DIR_NAME); }
-    private File libDir() { return new File(getFilesDir(), LIB_DIR_NAME); }
-
     private void setAllButtonsEnabled(boolean enabled) {
-        downloadButton.setEnabled(enabled);
+        runAsRootCheckBox.setEnabled(enabled);
         startButton.setEnabled(enabled);
+        terminateButton.setEnabled(enabled);
+        downloadButton.setEnabled(enabled);
         clearCacheButton.setEnabled(enabled);
         deleteAllButton.setEnabled(enabled);
-        terminateButton.setEnabled(enabled);
-        runAsRootCheckBox.setEnabled(enabled);
     }
 }

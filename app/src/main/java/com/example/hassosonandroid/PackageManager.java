@@ -1,6 +1,5 @@
 package com.example.hassosonandroid;
 
-import android.content.Context;
 import android.os.Build;
 import android.system.Os;
 import android.util.Log;
@@ -38,10 +37,8 @@ public class PackageManager {
     private static final String TAG = "HassOSPackageManager";
     private static final String TERMUX_REPO_URL = "https://packages.termux.dev/apt/termux-main/";
     private static final String TERMUX_PACKAGES_FILE_URL = TERMUX_REPO_URL + "dists/stable/main/binary-aarch64/Packages";
-    private static final String LIB_DIR_NAME = "lib";
-    private static final String BIN_DIR_NAME = "bin";
 
-    private final Context context;
+    private final FileUtils fileUtils;
     private final StatusListener statusListener;
 
     public interface StatusListener {
@@ -50,9 +47,30 @@ public class PackageManager {
         void onError(String message, Throwable e);
     }
 
-    public PackageManager(Context context, StatusListener listener) {
-        this.context = context;
+    public PackageManager(FileUtils fileUtils, StatusListener listener) {
+        this.fileUtils = fileUtils;
         this.statusListener = listener;
+    }
+
+    public void installDebFromUrl(String url, Set<String> filesToExtract) {
+        try {
+            statusListener.onStatusUpdate("Downloading from " + url);
+            String fileName = url.substring(url.lastIndexOf('/') + 1);
+            File debFile = new File(fileUtils.cacheDir(), fileName);
+            try {
+                FileUtils.downloadUrlToFile(url, debFile, false, message -> statusListener.onStatusUpdate(message));
+            } catch (java.security.GeneralSecurityException e) {
+                throw new IOException("TLS error downloading", e);
+            }
+
+            statusListener.onStatusUpdate("Unpacking...");
+            unpackDeb(debFile, filesToExtract);
+
+            statusListener.onFinalMessage("Setup complete.");
+
+        } catch (Exception e) {
+            statusListener.onError("Error during installation", e);
+        }
     }
 
     /**
@@ -60,28 +78,6 @@ public class PackageManager {
      * It uses an iterative approach to resolve all direct and indirect dependencies.
      * @param initialPackages The list of packages to install.
      */
-    public void installDebFromUrl(String url, Set<String> filesToExtract) {
-        try {
-            statusListener.onStatusUpdate("Downloading firmware from " + url);
-            String fileName = url.substring(url.lastIndexOf('/') + 1);
-            File debFile = new File(context.getCacheDir(), fileName);
-            try {
-                FileUtils.downloadUrlToFile(url, debFile, true, message -> statusListener.onStatusUpdate(message));
-            } catch (java.security.GeneralSecurityException e) {
-                throw new IOException("TLS error downloading firmware", e);
-            }
-
-            statusListener.onStatusUpdate("Unpacking firmware...");
-            unpackDeb(debFile, filesToExtract);
-
-            debFile.delete();
-            statusListener.onStatusUpdate("Firmware setup complete.");
-
-        } catch (Exception e) {
-            statusListener.onError("Error during firmware installation", e);
-        }
-    }
-
     public void installPackages(List<String> initialPackages) {
         final StringBuilder warnings = new StringBuilder();
         try {
@@ -157,7 +153,7 @@ public class PackageManager {
             // 5. Download and unpack all selected packages
             List<File> downloadedDebs = new ArrayList<>();
             for (PackageInfo info : selectedPackages.values()) {
-                File debFile = new File(context.getCacheDir(), info.filename.replace('/', '_'));
+                File debFile = new File(fileUtils.cacheDir(), info.filename.replace('/', '_'));
                 try {
                     FileUtils.downloadUrlToFile(TERMUX_REPO_URL + info.filename, debFile, false, message -> statusListener.onStatusUpdate(message));
                 } catch (java.security.GeneralSecurityException e) {
@@ -171,9 +167,6 @@ public class PackageManager {
 
             statusListener.onStatusUpdate("Creating symbolic links...");
             for (File deb : downloadedDebs) unpackDeb(deb, UnpackMode.SYMLINKS_ONLY);
-
-            // 6. Clean up downloaded .deb files
-            for (File deb : downloadedDebs) deb.delete();
 
             String finalMessage = "Package setup complete!";
             if (warnings.length() > 0) {
@@ -338,7 +331,7 @@ public class PackageManager {
                             String cleanedPath = entryPath.startsWith("./") ? entryPath.substring(2) : entryPath;
 
                             if (filesToExtract.contains(cleanedPath)) {
-                                File outputFile = new File(context.getFilesDir(), new File(cleanedPath).getName());
+                                File outputFile = new File(fileUtils.filesDir(), new File(cleanedPath).getName());
                                 if (outputFile.exists()) outputFile.delete();
                                 outputFile.getParentFile().mkdirs();
 
@@ -370,14 +363,14 @@ public class PackageManager {
                     XZInputStream xzInput = new XZInputStream(arInput);
                     try (TarArchiveInputStream tarInput = new TarArchiveInputStream(xzInput)) {
                         TarArchiveEntry tarEntry;
-                        while ((tarEntry = tarInput.getNextTarEntry()) != null) {
+                        while ((tarEntry = tarInput.getNextEntry()) != null) {
                             String entryPath = tarEntry.getName();
                             if (!entryPath.startsWith(termuxPrefix)) continue;
 
                             String relativePath = entryPath.substring(termuxPrefix.length());
                             if (relativePath.isEmpty()) continue;
 
-                            File outputFile = new File(context.getFilesDir(), relativePath);
+                            File outputFile = new File(fileUtils.filesDir(), relativePath);
 
                             if (tarEntry.isDirectory()) {
                                 if (mode == UnpackMode.FILES_ONLY) {
@@ -442,6 +435,4 @@ public class PackageManager {
         return db;
     }
 
-    private File binDir() { return new File(context.getFilesDir(), BIN_DIR_NAME); }
-    private File libDir() { return new File(context.getFilesDir(), LIB_DIR_NAME); }
 }

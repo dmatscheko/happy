@@ -1,5 +1,6 @@
 package com.example.hassosonandroid;
 
+import android.content.Context;
 import android.os.Build;
 import android.util.Log;
 import androidx.annotation.RequiresApi;
@@ -22,8 +23,15 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 
+
 public class FileUtils {
     private static final String TAG = "FileUtils";
+    private final Context context;
+
+
+    public FileUtils(Context context) {
+        this.context = context;
+    }
 
     @RequiresApi(api = Build.VERSION_CODES.O)
     public static void deleteRecursive(File fileOrDirectory) {
@@ -83,6 +91,7 @@ public class FileUtils {
                 throw new IOException("Server returned HTTP " + connection.getResponseCode() + " " + connection.getResponseMessage());
             }
             int fileLength = connection.getContentLength();
+            file.getParentFile().mkdirs();
             if (listener != null) listener.onProgressUpdate("Downloading " + file.getName() + "...");
             try (InputStream input = connection.getInputStream(); OutputStream output = new FileOutputStream(file)) {
                 byte[] data = new byte[8192];
@@ -100,4 +109,11 @@ public class FileUtils {
             connection.disconnect();
         }
     }
+
+
+    public File cacheDir() { return new File(context.getNoBackupFilesDir(), "cache"); }
+    public File filesDir() { return new File(context.getNoBackupFilesDir(), "files"); }
+    public File binDir() { return new File(filesDir(), "bin"); }
+    public File libDir() { return new File(filesDir(), "lib"); }
+
 }
