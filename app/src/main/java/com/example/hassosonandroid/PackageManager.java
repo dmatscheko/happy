@@ -41,37 +41,41 @@ public class PackageManager {
     private final FileUtils fileUtils;
     private final StatusListener statusListener;
 
+
     public interface StatusListener {
         void onStatusUpdate(String message);
         void onFinalMessage(String message);
         void onError(String message, Throwable e);
     }
 
+
     public PackageManager(FileUtils fileUtils, StatusListener listener) {
         this.fileUtils = fileUtils;
         this.statusListener = listener;
     }
 
-    public void installDebFromUrl(String url, Set<String> filesToExtract) {
-        try {
-            statusListener.onStatusUpdate("Downloading from " + url);
-            String fileName = url.substring(url.lastIndexOf('/') + 1);
-            File debFile = new File(fileUtils.cacheDir(), fileName);
-            try {
-                FileUtils.downloadUrlToFile(url, debFile, false, message -> statusListener.onStatusUpdate(message));
-            } catch (java.security.GeneralSecurityException e) {
-                throw new IOException("TLS error downloading", e);
-            }
 
-            statusListener.onStatusUpdate("Unpacking...");
-            unpackDeb(debFile, filesToExtract);
+    // public void installDebFromUrl(String url, Set<String> filesToExtract) {
+    //     try {
+    //         statusListener.onStatusUpdate("Downloading from " + url);
+    //         String fileName = url.substring(url.lastIndexOf('/') + 1);
+    //         File debFile = new File(fileUtils.cacheDir(), fileName);
+    //         try {
+    //             FileUtils.downloadUrlToFile(url, debFile, false, message -> statusListener.onStatusUpdate(message));
+    //         } catch (java.security.GeneralSecurityException e) {
+    //             throw new IOException("TLS error downloading", e);
+    //         }
 
-            statusListener.onFinalMessage("Setup complete.");
+    //         statusListener.onStatusUpdate("Unpacking...");
+    //         unpackDeb(debFile, filesToExtract);
 
-        } catch (Exception e) {
-            statusListener.onError("Error during installation", e);
-        }
-    }
+    //         statusListener.onFinalMessage("Setup complete.");
+
+    //     } catch (Exception e) {
+    //         statusListener.onError("Error during installation", e);
+    //     }
+    // }
+
 
     /**
      * The main method to resolve and install a list of packages.
@@ -179,6 +183,7 @@ public class PackageManager {
         }
     }
 
+
     private void verifyDependencies(Map<String, PackageInfo> selectedPackages, StringBuilder warnings) {
         for (PackageInfo pkg : selectedPackages.values()) {
             Collection<Dependency> dependencies = parseDepends(pkg.depends);
@@ -220,6 +225,7 @@ public class PackageManager {
         }
     }
 
+
     private PackageInfo findBestPackage(Map<String, PackageInfo> packageDb, String packageName, String versionConstraint) {
         Dependency tempDep = new Dependency(packageName, versionConstraint);
 
@@ -252,6 +258,7 @@ public class PackageManager {
         String depends;
         List<String> provides = new ArrayList<>();
     }
+
 
     public static class Dependency {
         String packageName;
@@ -287,6 +294,7 @@ public class PackageManager {
         }
     }
 
+
     public static Collection<Dependency> parseDepends(String dependsString) {
         Map<String, Dependency> dependencies = new HashMap<>();
         if (dependsString == null || dependsString.isEmpty()) return dependencies.values();
@@ -311,6 +319,7 @@ public class PackageManager {
         }
         return dependencies.values();
     }
+
 
     public static int compareVersions(String v1, String v2) {
         // Simplified version comparison. Does not handle epochs or tildes.
@@ -338,41 +347,42 @@ public class PackageManager {
     }
 
 
-    private void unpackDeb(File debFile, Set<String> filesToExtract) throws Exception {
-        Set<String> extractedFiles = new HashSet<>();
-        try (ArArchiveInputStream arInput = new ArArchiveInputStream(new BufferedInputStream(new FileInputStream(debFile)))) {
-            org.apache.commons.compress.archivers.ArchiveEntry entry;
-            while ((entry = arInput.getNextEntry()) != null) {
-                if (entry.getName().equals("data.tar.xz")) {
-                    XZInputStream xzInput = new XZInputStream(arInput);
-                    try (TarArchiveInputStream tarInput = new TarArchiveInputStream(xzInput)) {
-                        TarArchiveEntry tarEntry;
-                        while ((tarEntry = tarInput.getNextTarEntry()) != null) {
-                            String entryPath = tarEntry.getName();
-                            // Paths in tar are like ./usr/share/AAVMF/AAVMF_CODE.no-secboot.fd
-                            String cleanedPath = entryPath.startsWith("./") ? entryPath.substring(2) : entryPath;
+    // private void unpackDeb(File debFile, Set<String> filesToExtract) throws Exception {
+    //     Set<String> extractedFiles = new HashSet<>();
+    //     try (ArArchiveInputStream arInput = new ArArchiveInputStream(new BufferedInputStream(new FileInputStream(debFile)))) {
+    //         org.apache.commons.compress.archivers.ArchiveEntry entry;
+    //         while ((entry = arInput.getNextEntry()) != null) {
+    //             if (entry.getName().equals("data.tar.xz")) {
+    //                 XZInputStream xzInput = new XZInputStream(arInput);
+    //                 try (TarArchiveInputStream tarInput = new TarArchiveInputStream(xzInput)) {
+    //                     TarArchiveEntry tarEntry;
+    //                     while ((tarEntry = tarInput.getNextTarEntry()) != null) {
+    //                         String entryPath = tarEntry.getName();
+    //                         // Paths in tar are like ./usr/share/AAVMF/AAVMF_CODE.no-secboot.fd
+    //                         String cleanedPath = entryPath.startsWith("./") ? entryPath.substring(2) : entryPath;
 
-                            if (filesToExtract.contains(cleanedPath)) {
-                                File outputFile = new File(fileUtils.filesDir(), new File(cleanedPath).getName());
-                                if (outputFile.exists()) outputFile.delete();
-                                outputFile.getParentFile().mkdirs();
+    //                         if (filesToExtract.contains(cleanedPath)) {
+    //                             File outputFile = new File(fileUtils.filesDir(), new File(cleanedPath).getName());
+    //                             if (outputFile.exists()) outputFile.delete();
+    //                             outputFile.getParentFile().mkdirs();
 
-                                try (OutputStream out = new FileOutputStream(outputFile)) {
-                                    tarInput.transferTo(out);
-                                }
-                                extractedFiles.add(cleanedPath);
-                                // If all files are extracted, we can stop.
-                                if (extractedFiles.size() == filesToExtract.size()) {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-                    return;
-                }
-            }
-        }
-    }
+    //                             try (OutputStream out = new FileOutputStream(outputFile)) {
+    //                                 tarInput.transferTo(out);
+    //                             }
+    //                             extractedFiles.add(cleanedPath);
+    //                             // If all files are extracted, we can stop.
+    //                             if (extractedFiles.size() == filesToExtract.size()) {
+    //                                 return;
+    //                             }
+    //                         }
+    //                     }
+    //                 }
+    //                 return;
+    //             }
+    //         }
+    //     }
+    // }
+
 
     @RequiresApi(api = Build.VERSION_CODES.LOLLIPOP)
     private void unpackDeb(File debFile, UnpackMode mode) throws Exception {
@@ -428,6 +438,7 @@ public class PackageManager {
             }
         }
     }
+
 
     private Map<String, PackageInfo> parsePackagesFile() throws IOException {
         Map<String, PackageInfo> db = new HashMap<>();

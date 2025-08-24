@@ -113,7 +113,7 @@ public class FileUtils {
 
     public File cacheDir() { return new File(context.getNoBackupFilesDir(), "cache"); }
     public File filesDir() { return new File(context.getNoBackupFilesDir(), "files"); }
-    public File binDir() { return new File(filesDir(), "bin"); }
-    public File libDir() { return new File(filesDir(), "lib"); }
+    public File binDir() { return new File(filesDir(), "usr/bin"); }
+    public File libDir() { return new File(filesDir(), "usr/lib"); }
 
 }
