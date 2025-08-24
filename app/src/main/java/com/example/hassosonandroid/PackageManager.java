@@ -321,25 +321,97 @@ public class PackageManager {
     }
 
 
+    private static int order(char c) {
+        if (Character.isDigit(c)) {
+            return 0;
+        } else if (Character.isLetter(c)) {
+            return c;
+        } else if (c == '~') {
+            return -1;
+        } else {
+            return c + 256;
+        }
+    }
+
     public static int compareVersions(String v1, String v2) {
-        // Simplified version comparison. Does not handle epochs or tildes.
-        String[] parts1 = v1.split("[.\\-:]");
-        String[] parts2 = v2.split("[.\\-:]");
+        String s1 = v1;
+        String s2 = v2;
 
-        int length = Math.max(parts1.length, parts2.length);
-        for (int i = 0; i < length; i++) {
-            String part1 = i < parts1.length ? parts1[i] : "0";
-            String part2 = i < parts2.length ? parts2[i] : "0";
+        if (s1 == null) {
+            s1 = "";
+        }
+        if (s2 == null) {
+            s2 = "";
+        }
 
+        int epoch1 = 0;
+        int epoch2 = 0;
+
+        int colon1 = s1.indexOf(':');
+        if (colon1 != -1) {
             try {
-                // Try numeric comparison first
-                int num1 = Integer.parseInt(part1);
-                int num2 = Integer.parseInt(part2);
-                if (num1 < num2) return -1;
-                if (num1 > num2) return 1;
+                epoch1 = Integer.parseInt(s1.substring(0, colon1));
+                s1 = s1.substring(colon1 + 1);
             } catch (NumberFormatException e) {
-                // Fallback to lexical comparison
-                int cmp = part1.compareTo(part2);
+                // Not a valid epoch, treat as part of the version
+            }
+        }
+
+        int colon2 = s2.indexOf(':');
+        if (colon2 != -1) {
+            try {
+                epoch2 = Integer.parseInt(s2.substring(0, colon2));
+                s2 = s2.substring(colon2 + 1);
+            } catch (NumberFormatException e) {
+                // Not a valid epoch, treat as part of the version
+            }
+        }
+
+        if (epoch1 < epoch2) return -1;
+        if (epoch1 > epoch2) return 1;
+
+        return compareStrings(s1, s2);
+    }
+
+    private static int compareStrings(String s1, String s2) {
+        int i = 0;
+        int j = 0;
+
+        while (i < s1.length() || j < s2.length()) {
+            int first_diff = 0;
+
+            while ((i < s1.length() && !Character.isDigit(s1.charAt(i))) ||
+                   (j < s2.length() && !Character.isDigit(s2.charAt(j))))
+            {
+                int a = i < s1.length() ? order(s1.charAt(i)) : 0;
+                int b = j < s2.length() ? order(s2.charAt(j)) : 0;
+
+                if (a != b) {
+                    return a - b;
+                }
+
+                i++;
+                j++;
+            }
+
+            // Compare numbers
+            while (i < s1.length() && s1.charAt(i) == '0') i++;
+            while (j < s2.length() && s2.charAt(j) == '0') j++;
+
+            int num_start_i = i;
+            int num_start_j = j;
+
+            while (i < s1.length() && Character.isDigit(s1.charAt(i))) i++;
+            while (j < s2.length() && Character.isDigit(s2.charAt(j))) j++;
+
+            int len1 = i - num_start_i;
+            int len2 = j - num_start_j;
+
+            if (len1 > len2) return 1;
+            if (len2 > len1) return -1;
+
+            if (len1 > 0) {
+                int cmp = s1.substring(num_start_i, i).compareTo(s2.substring(num_start_j, j));
                 if (cmp != 0) return cmp;
             }
         }
