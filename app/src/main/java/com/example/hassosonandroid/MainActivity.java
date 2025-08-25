@@ -203,7 +203,7 @@ public class MainActivity extends AppCompatActivity {
                         " -m 8192 -M virt,highmem=on -cpu cortex-a72 -smp 8" +
                         " -drive file=" + osImage.getAbsolutePath() + ",format=qcow2,if=none,id=hd0" +
                         " -device virtio-blk-device,drive=hd0" +
-                        " -netdev user,id=net0,hostfwd=tcp::8123-:8123,dns=1.1.1.1" +
+                        " -netdev user,id=net0,hostfwd=tcp::8123-:8123,dns=1.1.1.1,ipv6=off" +
                         " -device virtio-net-pci,netdev=net0,romfile=\"\"" +
                         " -drive if=pflash,format=raw,readonly=on,file=" + aavmfCodeFd.getAbsolutePath() +
                         " -drive if=pflash,format=raw,file=" + aavmfVarsFd.getAbsolutePath() +
@@ -329,7 +329,7 @@ public class MainActivity extends AppCompatActivity {
         checkFilesExistAndUpdateUi();
     }
 
-    
+
     private boolean isVMRunning() {
         File pidFile = new File(fileUtils.filesDir(), "qemu.pid");
         try {
